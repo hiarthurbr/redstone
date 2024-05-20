@@ -37,11 +37,10 @@ impl Identifier {
     ///
     /// # Errors
     ///
-    /// Returns an error if the namespace or value does not match the following regex:
+    /// Returns [`IdentifierError::NameSpace`] if the namespace does not match the following regex: `[a-z0-9.-_]`
     ///
-    /// Namespace: `[a-z0-9.-_]`
+    /// Returns [`IdentifierError::Value`] if the value does not match the following regex: `[a-z0-9.-_/]`
     ///
-    /// Value: `[a-z0-9.-_/]`
     pub fn new(namespace: String, value: String) -> Result<Identifier, IdentifierError> {
         if !NS_RE.is_match(&namespace) {
             return Err(IdentifierError::NameSpace);

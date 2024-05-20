@@ -1,4 +1,18 @@
-use std::num::TryFromIntError;
+use thiserror::Error;
+
+use crate::DataResult;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
+pub enum PositionError {
+    #[error("X is out of range")]
+    XOutOfRange,
+    #[error("Y is out of range")]
+    YOutOfRange,
+    #[error("Z is out of range")]
+    ZOutOfRange,
+    #[error("Failed to convert from i64 to i32")]
+    Overflow,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// A position in the world.
@@ -14,17 +28,17 @@ impl Position {
     /// ## Errors
     ///
     /// Returns an error if any of the coordinates are out of range.
-    pub fn new(x: i32, y: i32, z: i32) -> Result<Position, &'static str> {
+    pub fn new(x: i32, y: i32, z: i32) -> DataResult<Position> {
         if x > 0b11_1111_1111_1111_1111_1111_1111 {
-            return Err("X is out of range");
+            return Err(PositionError::XOutOfRange)?;
         }
 
         if y > 0b1111_1111_1111 {
-            return Err("Y is out of range");
+            return Err(PositionError::YOutOfRange)?;
         }
 
         if z > 0b11_1111_1111_1111_1111_1111_1111 {
-            return Err("Z is out of range");
+            return Err(PositionError::ZOutOfRange)?;
         }
 
         Ok(Position { x, y, z })
@@ -48,17 +62,19 @@ impl Position {
     ///
     /// ## Errors
     ///
-    /// Returns an error if any of the coordinates overflow an `i32`.
-    pub fn decode(value: i64) -> Result<Position, TryFromIntError> {
+    /// Returns [`PositionError::Overflow`] if any of the coordinates overflow an `i32`.
+    ///
+    /// Returns an error if any of the coordinates are out of range. See [`Position::new`].
+    pub fn decode(value: i64) -> DataResult<Position> {
         let x = value >> 38;
         let y = value << 52 >> 52;
         let z = value << 26 >> 38;
 
-        Ok(Position {
-            x: x.try_into()?,
-            y: y.try_into()?,
-            z: z.try_into()?,
-        })
+        Self::new(
+            x.try_into().map_err(|_| PositionError::Overflow)?,
+            y.try_into().map_err(|_| PositionError::Overflow)?,
+            z.try_into().map_err(|_| PositionError::Overflow)?,
+        )
     }
 }
 

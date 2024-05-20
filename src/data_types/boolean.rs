@@ -1,3 +1,13 @@
+use thiserror::Error;
+
+use crate::DataResult;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
+pub enum BooleanError {
+    #[error("Invalid boolean value")]
+    InvalidValue,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Boolean(pub bool);
 
@@ -14,12 +24,12 @@ impl Boolean {
     ///
     /// # Errors
     ///
-    /// Returns an error if the value is not `0x00` or `0x01`.
-    pub fn decode(value: u8) -> Result<Boolean, &'static str> {
+    /// Returns [`BooleanError::InvalidValue`] if the value is not `0x00` or `0x01`.
+    pub fn decode(value: u8) -> DataResult<Boolean> {
         match value {
             0x00 => Ok(Boolean(false)),
             0x01 => Ok(Boolean(true)),
-            _ => Err("Invalid boolean value"),
+            _ => Err(BooleanError::InvalidValue)?,
         }
     }
 }

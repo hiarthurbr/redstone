@@ -3,10 +3,7 @@ use thiserror::Error;
 use crate::{data_types::var_int::VarInt, Boolean, DataResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
-pub enum SlotDataError {
-    #[error("Invalid boolean value")]
-    InvalidBoolean,
-}
+pub enum SlotDataError {}
 
 pub struct Slot {
     pub data: Option<SlotData>,
@@ -20,6 +17,11 @@ pub struct SlotData {
 }
 
 impl Slot {
+    /// Encodes a [`Slot`] into a [`Vec<u8>`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VarIntError::EncodeOverflow`] if the [`VarInt`] is too big.
     pub fn encode(&self) -> DataResult<Vec<u8>> {
         match &self.data {
             Some(data) => {
@@ -30,22 +32,6 @@ impl Slot {
                 Ok(bytes)
             }
             None => Ok(vec![Boolean(false).encode()]),
-        }
-    }
-
-    /// Decodes a `u8` into a [`Boolean`], where:
-    ///
-    /// - `0x00` represents `false`.
-    /// - `0x01` represents `true`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the value is not `0x00` or `0x01`.
-    pub fn decode(value: u8) -> DataResult<Boolean> {
-        match value {
-            0x00 => Ok(Boolean(false)),
-            0x01 => Ok(Boolean(true)),
-            _ => Err(SlotDataError::InvalidBoolean)?,
         }
     }
 }

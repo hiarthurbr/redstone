@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use thiserror::Error;
 
-use crate::Errors;
+use crate::{DataResult, Errors};
 
 use super::var_int::VarInt;
 
@@ -15,7 +15,6 @@ static MAX_SIZE: u32 = 32767;
 /// Maximum `n` value is 32767.
 /// The + 3 is due to the max size of a valid length [`VarInt`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
-
 pub struct String {
     pub data: std::string::String,
     max_size: u32,
@@ -41,11 +40,11 @@ impl String {
     ///
     /// ## Errors
     ///
-    /// Returns an error if `len` is greater than 32767.
-    pub fn new(len: Option<u32>) -> Result<Self, StringError> {
+    /// Returns [`StringError::OutOfBoundsLength`] if `len` is greater than 32767.
+    pub fn new(len: Option<u32>) -> DataResult<Self> {
         let len = len.unwrap_or(MAX_SIZE);
         if len > MAX_SIZE {
-            return Err(StringError::OutOfBoundsLength);
+            return Err(StringError::OutOfBoundsLength)?;
         }
 
         Ok(String {
@@ -60,15 +59,15 @@ impl String {
     ///
     /// ## Errors
     ///
-    /// Returns an error if `string` is greater than 32767 characters,
-    /// or if the UTF-8 encoding of `string` is greater than 32767 bytes.
-    pub fn insert(&mut self, string: std::string::String) -> Result<&mut Self, StringError> {
+    /// Returns [`StringError::OutOfBoundsLength`] if `string` is greater than 32767 characters,
+    /// or [`StringError::OutOfBoundsEncoding`] if the UTF-8 encoding of `string` is greater than 32767 bytes.
+    pub fn insert(&mut self, string: std::string::String) -> DataResult<&mut Self> {
         if string.len() > self.max_size as usize {
-            return Err(StringError::OutOfBoundsLength);
+            return Err(StringError::OutOfBoundsLength)?;
         }
 
         if string.as_bytes().len() > (MAX_SIZE * 3) as usize {
-            return Err(StringError::OutOfBoundsEncoding);
+            return Err(StringError::OutOfBoundsEncoding)?;
         }
 
         self.data = string;
@@ -76,23 +75,23 @@ impl String {
         Ok(self)
     }
 
-    /// Inserts a string into the String struct.
+    /// Concatenates a string into the String struct.
     ///
     /// Unlike [`String::insert`], this does not replace the current string,
     /// but instead appends the string to the current string.
     ///
     /// ## Errors
     ///
-    /// Returns an error if `string` is greater than 32767 characters,
+    /// Returns [`StringError::OutOfBoundsLength`] if `string` is greater than 32767 characters,
     /// if the current string length plus the length of `string` is greater than 32767,
-    /// or if the UTF-8 encoding of `string` is greater than 32767 bytes.
-    pub fn concat(&mut self, string: std::string::String) -> Result<&mut Self, StringError> {
+    /// or [`StringError::OutOfBoundsEncoding`] if the UTF-8 encoding of `string` is greater than 32767 bytes.
+    pub fn concat(&mut self, string: std::string::String) -> DataResult<&mut Self> {
         if string.len() > self.max_size as usize {
-            return Err(StringError::OutOfBoundsLength);
+            return Err(StringError::OutOfBoundsLength)?;
         }
 
         if string.as_bytes().len() > (MAX_SIZE * 3) as usize {
-            return Err(StringError::OutOfBoundsEncoding);
+            return Err(StringError::OutOfBoundsEncoding)?;
         }
 
         self.data = string;
@@ -104,11 +103,9 @@ impl String {
     ///
     /// ## Errors
     ///
-    /// Returns an error if the length of the string overflows an i32,
-    /// or if there is a problem encoding the [`VarInt`].
-    pub fn to_bytes(&mut self) -> Result<Vec<u8>, Errors> {
-        #[allow(clippy::cast_possible_truncation)]
-        #[allow(clippy::cast_possible_wrap)]
+    /// Returns [`StringError::OutOfBoundsLength`] if the length of the string overflows an i32,
+    /// or [`VarIntError::EncodeOverflow`] if there is a problem encoding the [`VarInt`].
+    pub fn to_bytes(&mut self) -> DataResult<Vec<u8>> {
         let len = self
             .data
             .len()
@@ -124,9 +121,10 @@ impl String {
     ///
     /// ## Errors
     ///
-    /// Returns an error if the bytes are not valid UTF-8,
-    /// or if the length of the string is not equal to the length specified by the [`VarInt`].
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Errors> {
+    /// Returns [`StringError::InvalidUTF8`] if the bytes are not valid UTF-8,
+    /// [`StringError::InvalidLength`] if the length of the string is not equal to the length specified by the [`VarInt`]
+    /// or [`VarIntError::EncodeOverflow`] if there is a problem encoding the [`VarInt`].
+    pub fn from_bytes(bytes: &[u8]) -> DataResult<Self> {
         let mut position = 0;
         let size = VarInt::decode(&bytes[position..])?;
 
@@ -149,11 +147,11 @@ impl String {
 }
 
 impl FromStr for String {
-    type Err = StringError;
+    type Err = Errors;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.len() > MAX_SIZE as usize {
-            return Err(StringError::OutOfBoundsLength);
+            return Err(StringError::OutOfBoundsLength)?;
         }
         #[allow(clippy::cast_possible_truncation)]
         let len = s.len() as u32;

@@ -1,8 +1,20 @@
+use thiserror::Error;
+
+use crate::DataResult;
+
 static SEGMENT_BITS: i64 = 0x7F;
 static CONTINUE_BIT: i64 = 0x80;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
+pub enum VarLongError {
+    #[error("Could not fit buffer into VarLong")]
+    DecodeOverflow,
+    #[error("Overflow while encoding VarLong")]
+    EncodeOverflow,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VarLong(pub i64);
+pub struct VarLong(i64);
 
 impl VarLong {
     #[must_use]
@@ -15,12 +27,12 @@ impl VarLong {
     /// ## Errors
     ///
     /// Returns an error if the [`VarLong`] is too big.
-    pub fn read(&mut self, buf: &[u8]) -> Result<i64, &'static str> {
-        self.0 = 0;
+    pub fn decode(buf: &[u8]) -> DataResult<Self> {
+        let mut int = 0;
         let mut position: i32 = 0;
 
         for current_byte in buf {
-            self.0 |= (i64::from(*current_byte) & SEGMENT_BITS) << position;
+            int |= (i64::from(*current_byte) & SEGMENT_BITS) << position;
 
             if (i64::from(*current_byte) & CONTINUE_BIT) == 0 {
                 break;
@@ -29,11 +41,11 @@ impl VarLong {
             position += 7;
 
             if position >= 64 {
-                return Err("VarLong is too big");
+                return Err(VarLongError::DecodeOverflow)?;
             }
         }
 
-        Ok(self.0)
+        Ok(Self(int))
     }
 
     /// Encodes a [`VarLong`] to a buffer.
@@ -41,12 +53,16 @@ impl VarLong {
     /// ## Errors
     ///
     /// Returns an error on overflow.
-    pub fn write(&mut self) -> Result<Vec<u8>, &'static str> {
+    pub fn write(&mut self) -> DataResult<Vec<u8>> {
         let mut bytes: Vec<u8> = Vec::new();
 
         loop {
             if (self.0 & !SEGMENT_BITS) == 0 {
-                bytes.push(self.0.try_into().map_err(|_| "u8 overflow")?);
+                bytes.push(
+                    self.0
+                        .try_into()
+                        .map_err(|_| VarLongError::EncodeOverflow)?,
+                );
 
                 return Ok(bytes);
             }
@@ -54,13 +70,18 @@ impl VarLong {
             bytes.push(
                 ((self.0 & SEGMENT_BITS) | CONTINUE_BIT)
                     .try_into()
-                    .map_err(|_| "u8 overflow")?,
+                    .map_err(|_| VarLongError::EncodeOverflow)?,
             );
 
             // Perform logical right shift by 7 bits (equivalent to >>>= 7 in other languages)
             self.0 >>= 7; // Perform arithmetic right shift
             self.0 &= !(!0 << (64 - 7)); // Masking to ensure zero-fill behavior
         }
+    }
+
+    #[must_use]
+    pub fn value(&self) -> i64 {
+        self.0
     }
 }
 
@@ -70,7 +91,7 @@ mod test {
 
     #[test]
     fn read_0() {
-        assert_eq!(VarLong::default().read(&[0x00]).unwrap(), 0);
+        assert_eq!(VarLong::decode(&[0x00]).unwrap().value(), 0);
     }
 
     #[test]
@@ -80,7 +101,7 @@ mod test {
 
     #[test]
     fn read_1() {
-        assert_eq!(VarLong::default().read(&[0x01]).unwrap(), 1);
+        assert_eq!(VarLong::decode(&[0x01]).unwrap().value(), 1);
     }
 
     #[test]
@@ -90,7 +111,7 @@ mod test {
 
     #[test]
     fn read_2() {
-        assert_eq!(VarLong::default().read(&[0x02]).unwrap(), 2);
+        assert_eq!(VarLong::decode(&[0x02]).unwrap().value(), 2);
     }
 
     #[test]
@@ -100,7 +121,7 @@ mod test {
 
     #[test]
     fn read_127() {
-        assert_eq!(VarLong::default().read(&[0x7f]).unwrap(), 127);
+        assert_eq!(VarLong::decode(&[0x7f]).unwrap().value(), 127);
     }
 
     #[test]
@@ -110,7 +131,7 @@ mod test {
 
     #[test]
     fn read_128() {
-        assert_eq!(VarLong::default().read(&[0x80, 0x01]).unwrap(), 128);
+        assert_eq!(VarLong::decode(&[0x80, 0x01]).unwrap().value(), 128);
     }
 
     #[test]
@@ -120,7 +141,7 @@ mod test {
 
     #[test]
     fn read_255() {
-        assert_eq!(VarLong::default().read(&[0xff, 0x01]).unwrap(), 255);
+        assert_eq!(VarLong::decode(&[0xff, 0x01]).unwrap().value(), 255);
     }
 
     #[test]
@@ -131,9 +152,9 @@ mod test {
     #[test]
     fn read_2147483647() {
         assert_eq!(
-            VarLong::default()
-                .read(&[0xff, 0xff, 0xff, 0xff, 0x07])
-                .unwrap(),
+            VarLong::decode(&[0xff, 0xff, 0xff, 0xff, 0x07])
+                .unwrap()
+                .value(),
             2_147_483_647
         );
     }
@@ -149,9 +170,9 @@ mod test {
     #[test]
     fn read_9223372036854775807() {
         assert_eq!(
-            VarLong::default()
-                .read(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f])
-                .unwrap(),
+            VarLong::decode(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f])
+                .unwrap()
+                .value(),
             9_223_372_036_854_775_807
         );
     }
@@ -167,9 +188,9 @@ mod test {
     #[test]
     fn read_minus_1() {
         assert_eq!(
-            VarLong::default()
-                .read(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
-                .unwrap(),
+            VarLong::decode(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
+                .unwrap()
+                .value(),
             -1
         );
     }
@@ -185,9 +206,9 @@ mod test {
     #[test]
     fn read_minus_2147483648() {
         assert_eq!(
-            VarLong::default()
-                .read(&[0x80, 0x80, 0x80, 0x80, 0xf8, 0xff, 0xff, 0xff, 0xff, 0x01])
-                .unwrap(),
+            VarLong::decode(&[0x80, 0x80, 0x80, 0x80, 0xf8, 0xff, 0xff, 0xff, 0xff, 0x01])
+                .unwrap()
+                .value(),
             -2_147_483_648
         );
     }
@@ -203,9 +224,9 @@ mod test {
     #[test]
     fn read_minus_9223372036854775808() {
         assert_eq!(
-            VarLong::default()
-                .read(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01])
-                .unwrap(),
+            VarLong::decode(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01])
+                .unwrap()
+                .value(),
             -9_223_372_036_854_775_808
         );
     }

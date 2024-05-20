@@ -4,6 +4,8 @@ use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
 
 use thiserror::Error;
 
+use crate::DataResult;
+
 /// **`IndexRange`** is implemented by Rust's built-in range types, produced
 /// by range syntax like `..`, `a..`, `..b` or `c..d`.
 pub trait IndexRange<T = usize> {
@@ -48,7 +50,7 @@ impl<T: Copy> IndexRange<T> for Range<T> {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
 pub enum BitSetError {
     #[error("Attempted to grow a frozen BitSet")]
     AttemptToGrowFrozen,
@@ -199,7 +201,7 @@ impl BitSet {
     ///   assert_eq!(bitset.length(), 20);
     /// }
     /// ```
-    pub fn grow(&mut self, nbits: usize) -> Result<(), BitSetError> {
+    pub fn grow(&mut self, nbits: usize) -> DataResult<()> {
         if nbits == 0 {
             return Ok(());
         }
@@ -242,13 +244,13 @@ impl BitSet {
     ///   assert_eq!(bitset.length(), 20);
     /// }
     /// ```
-    pub fn grow_to(&mut self, capacity: usize) -> Result<(), BitSetError> {
+    pub fn grow_to(&mut self, capacity: usize) -> DataResult<()> {
         if capacity == 0 {
             return Ok(());
         }
         if self.data.len() < capacity {
             if self.frozen {
-                return Err(BitSetError::AttemptToGrowFrozen);
+                return Err(BitSetError::AttemptToGrowFrozen)?;
             }
             self.data.resize(self.data.len().max(capacity), false);
         }
@@ -288,7 +290,7 @@ impl BitSet {
     ///   assert_eq!(bitset.length(), 6);
     /// }
     /// ```
-    pub fn clear(&mut self, bit_index: usize) -> Result<(), BitSetError> {
+    pub fn clear(&mut self, bit_index: usize) -> DataResult<()> {
         self.set(bit_index, false)
     }
 
@@ -326,7 +328,7 @@ impl BitSet {
     ///   assert_eq!(bitset.length(), 6);
     /// }
     /// ```
-    pub fn clear_range<R: IndexRange>(&mut self, range: R) -> Result<(), BitSetError> {
+    pub fn clear_range<R: IndexRange>(&mut self, range: R) -> DataResult<()> {
         self.set_range(range, false)
     }
 
@@ -361,7 +363,7 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn insert(&mut self, bit_index: usize) -> Result<(), BitSetError> {
+    pub fn insert(&mut self, bit_index: usize) -> DataResult<()> {
         self.set(bit_index, true)
     }
 
@@ -397,7 +399,7 @@ impl BitSet {
     ///   assert_eq!(bitset.get(4), Some(true));
     /// }
     /// ```
-    pub fn insert_range<R: IndexRange>(&mut self, range: R) -> Result<(), BitSetError> {
+    pub fn insert_range<R: IndexRange>(&mut self, range: R) -> DataResult<()> {
         self.set_range(range, true)
     }
 
@@ -435,7 +437,7 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn set(&mut self, bit_index: usize, to: bool) -> Result<(), BitSetError> {
+    pub fn set(&mut self, bit_index: usize, to: bool) -> DataResult<()> {
         self.grow_to(bit_index + 1)?;
         self.data[bit_index] = to;
         Ok(())
@@ -478,7 +480,7 @@ impl BitSet {
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
-    pub fn set_range<R: IndexRange>(&mut self, range: R, to: bool) -> Result<(), BitSetError> {
+    pub fn set_range<R: IndexRange>(&mut self, range: R, to: bool) -> DataResult<()> {
         self.grow_to(range.end().unwrap_or(self.data.len()) + 1)?;
         for i in range.start().unwrap_or(0)..range.end().unwrap_or(self.data.len()) {
             self.data[i] = to;
@@ -520,7 +522,7 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn flip(&mut self, bit_index: usize) -> Result<(), BitSetError> {
+    pub fn flip(&mut self, bit_index: usize) -> DataResult<()> {
         self.grow_to(bit_index + 1)?;
 
         self.data[bit_index] = !self.data[bit_index];
@@ -563,7 +565,7 @@ impl BitSet {
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
-    pub fn flip_range<R: IndexRange>(&mut self, range: R) -> Result<(), BitSetError> {
+    pub fn flip_range<R: IndexRange>(&mut self, range: R) -> DataResult<()> {
         let len = range.end().unwrap_or(self.data.len());
         self.grow_to(len + 1)?;
 
@@ -607,7 +609,7 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn put(&mut self, bit_index: usize, to: bool) -> Result<Option<bool>, BitSetError> {
+    pub fn put(&mut self, bit_index: usize, to: bool) -> DataResult<Option<bool>> {
         let previous = self.get(bit_index);
         self.grow_to(bit_index + 1)?;
 
@@ -652,7 +654,7 @@ impl BitSet {
     ///   assert_eq!(5 & 3, 1);
     /// }
     /// ```
-    pub fn and(&mut self, set: &BitSet) -> Result<(), BitSetError> {
+    pub fn and(&mut self, set: &BitSet) -> DataResult<()> {
         if self.length() < set.length() {
             self.grow_to(set.length())?;
         }
@@ -690,7 +692,7 @@ impl BitSet {
     ///   assert_eq!(5 | 3, 7);
     /// }
     /// ```
-    pub fn or(&mut self, set: &BitSet) -> Result<(), BitSetError> {
+    pub fn or(&mut self, set: &BitSet) -> DataResult<()> {
         if self.length() < set.length() {
             self.grow_to(set.length())?;
         }
@@ -728,7 +730,7 @@ impl BitSet {
     ///   assert_eq!(5 ^ 3, 6);
     /// }
     /// ```
-    pub fn xor(&mut self, set: &BitSet) -> Result<(), BitSetError> {
+    pub fn xor(&mut self, set: &BitSet) -> DataResult<()> {
         if self.length() < set.length() {
             self.grow_to(set.length())?;
         }
@@ -766,7 +768,7 @@ impl BitSet {
     ///   assert_eq!(5 & !3, 4);
     /// }
     /// ```
-    pub fn and_not(&mut self, set: &BitSet) -> Result<(), BitSetError> {
+    pub fn and_not(&mut self, set: &BitSet) -> DataResult<()> {
         if self.length() < set.length() {
             self.grow_to(set.length())?;
         }

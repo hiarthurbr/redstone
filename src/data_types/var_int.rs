@@ -1,14 +1,16 @@
 use thiserror::Error;
 
+use crate::DataResult;
+
 static SEGMENT_BITS: i32 = 0x7F;
 static CONTINUE_BIT: i32 = 0x80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
 pub enum VarIntError {
-    #[error("{0}")]
-    DecodeOverflow(&'static str),
-    #[error("{0}")]
-    EncodeOverflow(&'static str),
+    #[error("Could not fit buffer into VarInt")]
+    DecodeOverflow,
+    #[error("Overflow while encoding VarInt")]
+    EncodeOverflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -24,8 +26,8 @@ impl VarInt {
     ///
     /// ## Errors
     ///
-    /// Returns an error if the [`VarInt`] is too big.
-    pub fn decode(buf: &[u8]) -> Result<Self, VarIntError> {
+    /// Returns [`VarIntError::DecodeOverflow`] if the [`VarInt`] is too big.
+    pub fn decode(buf: &[u8]) -> DataResult<Self> {
         let mut value = 0;
         let mut position = 0;
 
@@ -39,7 +41,7 @@ impl VarInt {
             position += 7;
 
             if position >= 32 {
-                return Err(VarIntError::DecodeOverflow("VarInt is too big"));
+                return Err(VarIntError::DecodeOverflow)?;
             }
         }
 
@@ -50,18 +52,15 @@ impl VarInt {
     ///
     /// ## Errors
     ///
-    /// Returns an error on overflow.
-    pub fn encode(&self) -> Result<Vec<u8>, VarIntError> {
+    /// Returns [`VarIntError::EncodeOverflow`] on overflow.
+    pub fn encode(&self) -> DataResult<Vec<u8>> {
         let mut bytes: Vec<u8> = Vec::new();
 
         let mut int = self.0;
 
         loop {
             if (int & !SEGMENT_BITS) == 0 {
-                bytes.push(
-                    int.try_into()
-                        .map_err(|_| VarIntError::EncodeOverflow("u8 overflow"))?,
-                );
+                bytes.push(int.try_into().map_err(|_| VarIntError::EncodeOverflow)?);
 
                 return Ok(bytes);
             }
@@ -69,7 +68,7 @@ impl VarInt {
             bytes.push(
                 ((int & SEGMENT_BITS) | CONTINUE_BIT)
                     .try_into()
-                    .map_err(|_| VarIntError::EncodeOverflow("u8 overflow"))?,
+                    .map_err(|_| VarIntError::EncodeOverflow)?,
             );
 
             // Perform logical right shift by 7 bits (equivalent to >>>= 7 in other languages)

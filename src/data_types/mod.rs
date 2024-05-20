@@ -76,12 +76,20 @@ pub enum GenericDataTypes<X> {
 pub enum Errors {
     #[error("VarIntError: {0}")]
     VarIntError(#[from] VarIntError),
+    #[error("VarFloatError: {0}")]
+    VarFloatError(#[from] VarLongError),
     #[error("IdentifierError: {0}")]
     IdentifierError(#[from] IdentifierError),
     #[error("StringError: {0}")]
     StringError(#[from] StringError),
     #[error("SlotDataError: {0}")]
     SlotDataError(#[from] SlotDataError),
+    #[error("BitSetError: {0}")]
+    BitSetError(#[from] BitSetError),
+    #[error("BooleanError: {0}")]
+    BooleanError(#[from] BooleanError),
+    #[error("PositionError: {0}")]
+    PositionError(#[from] PositionError),
 }
 
 pub type DataResult<T> = std::result::Result<T, Errors>;
