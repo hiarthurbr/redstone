@@ -8,7 +8,7 @@ authors = ["arthurbr@cdmd.dev"]
 categories = ["game", "networking", "minecraft", "protocol"]
 keywords = ["game", "networking", "minecraft", "protocol"]
 documentation = "wiki.vg/Protocol"
-repository = "https://github.com/Ar7hurz1nh0/protocol"
+repository = "https://github.com/Ar7hurz1nh0/redstone"
 readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

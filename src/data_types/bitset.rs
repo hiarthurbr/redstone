@@ -1,52 +1,81 @@
-////////////////////////////////////////////////////////////////////////////////
-// Taken from https://github.com/bluss/odds/blob/master/src/range.rs //
-use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
-
 use thiserror::Error;
 
 use crate::DataResult;
 
+////////////////////////////////////////////////////////////////////////////////
+// This section was taken from https://github.com/bluss/odds/blob/master/src/range.rs
+// Although it is not a direct copy, it was heavily inspired by it.
+use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+
 /// **`IndexRange`** is implemented by Rust's built-in range types, produced
-/// by range syntax like `..`, `a..`, `..b` or `c..d`.
+/// by range syntax like `..`, `a..`, `..b`, `c..d`, `..=e` or `f..=g`.
 pub trait IndexRange<T = usize> {
     #[inline]
-    /// Start index (inclusive)
-    fn start(&self) -> Option<T> {
+    fn index(&self) -> Option<T> {
         None
     }
     #[inline]
-    /// End index (exclusive)
-    fn end(&self) -> Option<T> {
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
         None
     }
 }
 
-impl<T> IndexRange<T> for RangeFull {}
+impl<T> IndexRange<T> for RangeFull {
+    #[inline]
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
+        Some((None, None, false))
+    }
+}
 
 impl<T: Copy> IndexRange<T> for RangeFrom<T> {
     #[inline]
-    fn start(&self) -> Option<T> {
-        Some(self.start)
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
+        Some((Some(self.start), None, false))
     }
 }
 
 impl<T: Copy> IndexRange<T> for RangeTo<T> {
     #[inline]
-    fn end(&self) -> Option<T> {
-        Some(self.end)
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
+        Some((None, Some(self.end), false))
     }
 }
 
 impl<T: Copy> IndexRange<T> for Range<T> {
     #[inline]
-    fn start(&self) -> Option<T> {
-        Some(self.start)
-    }
-    #[inline]
-    fn end(&self) -> Option<T> {
-        Some(self.end)
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
+        Some((Some(self.start), Some(self.end), false))
     }
 }
+
+impl<T: Copy> IndexRange<T> for RangeInclusive<T> {
+    #[inline]
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
+        Some((Some(*self.start()), Some(*self.end()), true))
+    }
+}
+
+impl<T: Copy> IndexRange<T> for RangeToInclusive<T> {
+    #[inline]
+    fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
+        Some((None, Some(self.end), true))
+    }
+}
+
+macro_rules! impl_index {
+    ($($t:ty),*) => {
+        $(
+            impl IndexRange<$t> for $t {
+                #[inline]
+                fn index(&self) -> Option<$t> {
+                    Some(*self)
+                }
+            }
+        )*
+    };
+}
+
+impl_index!(usize, u8, u16, u32, u64, u128);
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -56,6 +85,30 @@ pub enum BitSetError {
     AttemptToGrowFrozen,
 }
 
+/// This defines the word size.
+/// It should be compatible with all integer types
+/// ([`u8`], [`u16`], [`u32`], [`u64`], [`usize`], [`i8`], [`i16`], [`i32`], [`i64`], [`isize`]. If not, you should file a issue).
+///
+/// Although, it comes with a performance tradeoff.
+///
+/// A bigger word will make a [`BitSet`] with less memory allocations, but will have a larger memory footprint, and may use larger registers.
+/// A smaller word will make a [`BitSet`] with more memory allocations, but with a smaller memory footprint, and may be faster to process.
+///
+/// ---
+///
+/// At the moment, this is set to [`usize`], so it should be using the best register for the system.
+///
+/// This may cause confusion though, as the [`usize`] type is not the same size on all systems.
+///
+/// ---
+///
+/// Changing this should NOT change the behavior of the [`BitSet`]
+/// (but it may change the performance, memory usage, and metrics, like the [`BitSet`] size or capacity).
+type Word = usize;
+
+/// Word size in bits
+pub const WORD_SIZE: usize = Word::BITS as usize;
+
 /// This struct implements a vector of bits that grows as needed. Each
 /// component of the bit set has a `boolean` value. The
 /// bits of a [`BitSet`] are indexed by nonnegative integers.
@@ -64,17 +117,10 @@ pub enum BitSetError {
 /// [`BitSet`] through logical AND, logical inclusive OR, and
 /// logical exclusive OR operations.
 ///
-/// By default, all bits in the set initially have the value
-/// `false`.
-///
-/// Every bit set has a current size, which is the number of bits
-/// of space currently in use by the bit set. Note that the size is
-/// related to the implementation of a bit set, so it may change with
-/// implementation. The length of a bit set relates to logical length
-/// of a bit set and is defined independently of implementation.
+/// By default, all bits in the set initially have the value `false`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct BitSet {
-    pub data: Vec<bool>,
+    data: Vec<Word>,
     frozen: bool,
 }
 
@@ -85,18 +131,18 @@ impl BitSet {
         BitSet::default()
     }
 
-    /// Creates a new bit set with the specified initial size.
+    /// Creates a new bitset with at least `n` bits.
     ///
     /// All bits are initially `false` and the [`BitSet`] size is frozen by default to the specified size.
     ///
     /// You can unfreeze the [`BitSet`] size with [`BitSet::unfreeze`].
     #[must_use]
-    pub fn with_capacity(nbits: usize) -> Self {
-        if nbits == 0 {
+    pub fn with_capacity(n: usize) -> Self {
+        if n == 0 {
             return BitSet::default();
         }
 
-        let mut data = vec![false; nbits];
+        let mut data = vec![Word::default(); n / WORD_SIZE];
         data.shrink_to_fit();
         BitSet { data, frozen: true }
     }
@@ -106,7 +152,7 @@ impl BitSet {
     /// This method is useful in situations where it is known that a [`BitSet`] will
     /// not need to be expanded to accommodate additional words.
     ///
-    /// Attempting to grow a frozen [`BitSet`] will result in an error.
+    /// Attempting to grow a frozen [`BitSet`] will return an [`BitSetError::AttemptToGrowFrozen`] error.
     ///
     /// ---
     ///
@@ -162,19 +208,20 @@ impl BitSet {
     ///
     /// After calling [`BitSet::trim`], the [`BitSet`] will look like: `0b0100_1001`
     pub fn trim(&mut self) {
-        for (i, bit) in self.data.iter().enumerate().rev() {
-            if *bit {
+        for (i, word) in self.data.iter().enumerate().rev() {
+            if *word == 0 {
                 self.data.truncate(i + 1);
                 return;
             }
         }
-        self.data.clear();
     }
 
     /// Clear all bits in the set
     #[allow(clippy::missing_panics_doc)]
     pub fn flush(&mut self) {
-        self.clear_range(..).expect("Should never attempt to grow");
+        for word in &mut self.data {
+            *word = Word::default();
+        }
     }
 
     /// Grows the set with the specified number of bits.
@@ -195,10 +242,10 @@ impl BitSet {
     /// {
     ///   let mut bitset = BitSet::with_capacity(10);
     ///   bitset.unfreeze();
-    ///   assert_eq!(bitset.length(), 10);
+    ///   assert_eq!(bitset.len(), 10);
     ///
     ///   bitset.grow(10);
-    ///   assert_eq!(bitset.length(), 20);
+    ///   assert_eq!(bitset.len(), 20);
     /// }
     /// ```
     pub fn grow(&mut self, nbits: usize) -> DataResult<()> {
@@ -252,7 +299,8 @@ impl BitSet {
             if self.frozen {
                 return Err(BitSetError::AttemptToGrowFrozen)?;
             }
-            self.data.resize(self.data.len().max(capacity), false);
+            self.data
+                .resize(self.data.len().max(capacity), Word::default());
         }
         Ok(())
     }
@@ -290,22 +338,6 @@ impl BitSet {
     ///   assert_eq!(bitset.length(), 6);
     /// }
     /// ```
-    pub fn clear(&mut self, bit_index: usize) -> DataResult<()> {
-        self.set(bit_index, false)
-    }
-
-    /// Sets the specified range of bits to false.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the end of the bit range is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error. In this case, no values are changed.
-    ///
-    /// ---
-    ///
-    /// ## Example
     ///
     /// ```
     /// use crate::protocol::data_types::{BitSet, BitSetError};
@@ -328,8 +360,8 @@ impl BitSet {
     ///   assert_eq!(bitset.length(), 6);
     /// }
     /// ```
-    pub fn clear_range<R: IndexRange>(&mut self, range: R) -> DataResult<()> {
-        self.set_range(range, false)
+    pub fn clear<I: IndexRange>(&mut self, index: I) -> DataResult<()> {
+        self.set(index, false)
     }
 
     /// Sets the specified bit to true.
@@ -363,22 +395,6 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn insert(&mut self, bit_index: usize) -> DataResult<()> {
-        self.set(bit_index, true)
-    }
-
-    /// Sets the specified range of bits to true.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the end of the bit range is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error. In this case, no values are changed.
-    ///
-    /// ---
-    ///
-    /// ## Example
     ///
     /// ```
     /// use crate::protocol::data_types::{BitSet, BitSetError};
@@ -399,8 +415,8 @@ impl BitSet {
     ///   assert_eq!(bitset.get(4), Some(true));
     /// }
     /// ```
-    pub fn insert_range<R: IndexRange>(&mut self, range: R) -> DataResult<()> {
-        self.set_range(range, true)
+    pub fn insert<I: IndexRange>(&mut self, index: I) -> DataResult<()> {
+        self.set(index, true)
     }
 
     /// Sets the specified bit to the given value.
@@ -437,24 +453,6 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn set(&mut self, bit_index: usize, to: bool) -> DataResult<()> {
-        self.grow_to(bit_index + 1)?;
-        self.data[bit_index] = to;
-        Ok(())
-    }
-
-    /// Sets the specified range of bits to the given value.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the end of the bit range is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error. In this case, no values are changed.
-    ///
-    /// ---
-    ///
-    /// ## Example
     ///
     /// ```
     /// use crate::protocol::data_types::{BitSet, BitSetError};
@@ -480,10 +478,53 @@ impl BitSet {
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
-    pub fn set_range<R: IndexRange>(&mut self, range: R, to: bool) -> DataResult<()> {
-        self.grow_to(range.end().unwrap_or(self.data.len()) + 1)?;
-        for i in range.start().unwrap_or(0)..range.end().unwrap_or(self.data.len()) {
-            self.data[i] = to;
+    pub fn set<I: IndexRange>(&mut self, index: I, to: bool) -> DataResult<()> {
+        if let Some(index) = index.index() {
+            let index = index / WORD_SIZE;
+            let bit_index = index % WORD_SIZE;
+
+            self.grow_to(index + 1)?;
+
+            self.data[index] |= Word::from(to) << bit_index;
+        }
+        if let Some((start, end, inclusive)) = index.range() {
+            let bitset_len = self.len();
+            let len = bitset_len * WORD_SIZE;
+            let start = start.unwrap_or(0);
+            let end = end.unwrap_or(len);
+
+            self.grow_to(end)?;
+
+            let starting_word_index = start / WORD_SIZE;
+            let ending_word_index = (bitset_len * WORD_SIZE) / end;
+            let shift_offset = start % WORD_SIZE;
+            let mut remaining_offset = end - start;
+
+            let mut shift = |e: usize, i: usize| {
+                let shift_pattern = if e == 0 {
+                    remaining_offset -= shift_offset;
+                    Word::MAX << shift_offset
+                } else if remaining_offset >= WORD_SIZE {
+                    remaining_offset -= WORD_SIZE;
+                    Word::MAX
+                } else {
+                    Word::MAX >> remaining_offset
+                };
+                self.data[i] |= shift_pattern;
+                if !to {
+                    self.data[i] ^= shift_pattern;
+                }
+            };
+
+            if inclusive {
+                for (e, i) in (starting_word_index..=ending_word_index).enumerate() {
+                    shift(e, i);
+                }
+            } else {
+                for (e, i) in (starting_word_index..ending_word_index).enumerate() {
+                    shift(e, i);
+                }
+            }
         }
         Ok(())
     }
@@ -522,25 +563,6 @@ impl BitSet {
     ///   assert_eq!(bitset.get(5), Some(true));
     /// }
     /// ```
-    pub fn flip(&mut self, bit_index: usize) -> DataResult<()> {
-        self.grow_to(bit_index + 1)?;
-
-        self.data[bit_index] = !self.data[bit_index];
-        Ok(())
-    }
-
-    /// Inverts the specified range of bits.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the end of the bit range is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error. In this case, no values are changed.
-    ///
-    /// ---
-    ///
-    /// ## Example
     ///
     /// ```
     /// use crate::protocol::data_types::{BitSet, BitSetError};
@@ -565,12 +587,25 @@ impl BitSet {
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
-    pub fn flip_range<R: IndexRange>(&mut self, range: R) -> DataResult<()> {
-        let len = range.end().unwrap_or(self.data.len());
-        self.grow_to(len + 1)?;
+    pub fn flip<I: IndexRange>(&mut self, index: I) -> DataResult<()> {
+        if let Some(index) = index.index() {
+            self.set(index, !self.get(index).unwrap_or(false))?;
+        }
+        if let Some((start, end, inclusive)) = index.range() {
+            let bitset_len = self.len();
+            let len = bitset_len * WORD_SIZE;
+            let start = start.unwrap_or(0);
+            let end = end.unwrap_or(len);
 
-        for i in range.start().unwrap_or(0)..len {
-            self.data[i] = !self.data[i];
+            if inclusive {
+                for i in start..=end {
+                    self.set(i, !self.get(i).unwrap_or(false))?;
+                }
+            } else {
+                for i in start..end {
+                    self.set(i, !self.get(i).unwrap_or(false))?;
+                }
+            }
         }
         Ok(())
     }
@@ -611,9 +646,8 @@ impl BitSet {
     /// ```
     pub fn put(&mut self, bit_index: usize, to: bool) -> DataResult<Option<bool>> {
         let previous = self.get(bit_index);
-        self.grow_to(bit_index + 1)?;
 
-        self.data[bit_index] = to;
+        self.set(bit_index, to)?;
         Ok(previous)
     }
 
@@ -622,10 +656,10 @@ impl BitSet {
     /// This method returns `None` if the bit index is bigger than the set's length.
     #[must_use]
     pub fn get(&self, bit_index: usize) -> Option<bool> {
-        if bit_index >= self.length() {
-            return None;
-        }
-        Some(self.data[bit_index])
+        let index = bit_index / WORD_SIZE;
+        let bit_index = bit_index % WORD_SIZE;
+        let bit = (self.data.get(index)? >> bit_index) & 1;
+        Some(bit == 1)
     }
 
     /// Performs the logical operator `AND` in this set, using the specified set.
@@ -655,8 +689,8 @@ impl BitSet {
     /// }
     /// ```
     pub fn and(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.length() < set.length() {
-            self.grow_to(set.length())?;
+        if self.len() < set.len() {
+            self.grow_to(set.len())?;
         }
 
         for (i, bit) in set.data.iter().enumerate() {
@@ -693,8 +727,8 @@ impl BitSet {
     /// }
     /// ```
     pub fn or(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.length() < set.length() {
-            self.grow_to(set.length())?;
+        if self.len() < set.len() {
+            self.grow_to(set.len())?;
         }
 
         for (i, bit) in set.data.iter().enumerate() {
@@ -731,8 +765,8 @@ impl BitSet {
     /// }
     /// ```
     pub fn xor(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.length() < set.length() {
-            self.grow_to(set.length())?;
+        if self.len() < set.len() {
+            self.grow_to(set.len())?;
         }
 
         for (i, bit) in set.data.iter().enumerate() {
@@ -769,8 +803,8 @@ impl BitSet {
     /// }
     /// ```
     pub fn and_not(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.length() < set.length() {
-            self.grow_to(set.length())?;
+        if self.len() < set.len() {
+            self.grow_to(set.len())?;
         }
 
         for (i, bit) in set.data.iter().enumerate() {
@@ -916,8 +950,10 @@ impl BitSet {
         clone
     }
 
-    // Maybe implement this later?
-    // #[must_use] pub fn intersects(&self, set: &BitSet) -> bool { todo!() }
+    #[must_use]
+    pub fn intersects(&self, set: &BitSet) -> bool {
+        todo!()
+    }
 
     /// Returns true if this set is a subset of the specified set.
     ///
@@ -934,8 +970,9 @@ impl BitSet {
     /// ```
     #[must_use]
     pub fn is_subset(&self, set: &BitSet) -> bool {
-        self.data.iter().zip(set.data.iter()).all(|(x, y)| !x && !y)
-            && self.data.iter().skip(set.data.len()).all(|x| !(*x))
+        todo!()
+        // self.data.iter().zip(set.data.iter()).all(|(x, y)| !x && !y)
+        //     && self.data.iter().skip(set.data.len()).all(|x| !(*x))
     }
 
     /// Returns true if this set is a superset of the specified set.
@@ -953,7 +990,7 @@ impl BitSet {
     /// ```
     #[must_use]
     pub fn is_superset(&self, set: &BitSet) -> bool {
-        set.is_subset(self)
+        todo!()
     }
 
     /// Returns true if this set has no bits in common with the specified set.
@@ -971,7 +1008,8 @@ impl BitSet {
     /// ```
     #[must_use]
     pub fn is_disjoint(&self, set: &BitSet) -> bool {
-        self.data.iter().zip(set.data.iter()).all(|(x, y)| !(x & y))
+        todo!()
+        // self.data.iter().zip(set.data.iter()).all(|(x, y)| !(x & y))
     }
 
     /// Returns true if the set is empty
@@ -1032,8 +1070,8 @@ impl BitSet {
     /// ```
     #[must_use]
     pub fn is_clear(&self) -> bool {
-        for bit in &self.data {
-            if *bit {
+        for word in &self.data {
+            if *word != 0 {
                 return false;
             }
         }
@@ -1062,8 +1100,8 @@ impl BitSet {
     /// ```
     #[must_use]
     pub fn is_full(&self) -> bool {
-        for bit in &self.data {
-            if !*bit {
+        for word in &self.data {
+            if *word != Word::MAX {
                 return false;
             }
         }
@@ -1090,11 +1128,11 @@ impl BitSet {
     /// }
     /// ```
     #[must_use]
-    pub fn length(&self) -> usize {
-        self.data.len()
+    pub fn len(&self) -> usize {
+        self.data.len() * WORD_SIZE
     }
 
-    /// Returns the size of the set, excluding trailing zeros
+    /// Returns the size of the set in words, excluding trailing zeros
     ///
     /// ---
     ///
@@ -1119,9 +1157,9 @@ impl BitSet {
     /// ```
     #[must_use]
     pub fn size(&self) -> usize {
-        let mut size = self.length();
+        let mut size = self.len();
         for bit in self.data.iter().rev() {
-            if *bit {
+            if *bit == 0 {
                 break;
             }
             size -= 1;
@@ -1132,66 +1170,100 @@ impl BitSet {
 
 /// This macro implements the From<$type> trait for [`BitSet`]
 macro_rules! impl_from_iter_for_bitset {
-    ($type:ty, $number:expr) => {
-        impl From<Vec<$type>> for BitSet {
-            fn from(vec: Vec<$type>) -> Self {
-                let data: Vec<bool> = vec
-                    .into_iter()
-                    .map(|word| {
-                        let mut bits: Vec<bool> = Vec::new();
-                        for i in 0..$number {
-                            bits.push((word & (1 << i)) != 0);
+    ($type:ty, $size:expr) => {
+        impl From<$type> for BitSet {
+            fn from(num: $type) -> Self {
+                let mut data: Vec<Word> = Vec::new();
+
+                let n: Result<Word, _> = num.try_into();
+
+                match n {
+                    Ok(n) => data.push(n),
+                    Err(_) => {
+                        for shift in (0..$size).step_by(WORD_SIZE) {
+                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                            let word = (num >> shift) as Word;
+                            data.push(word);
                         }
-                        bits
-                    })
-                    .collect::<Vec<Vec<bool>>>()
-                    .concat();
+                    }
+                }
+
                 BitSet { frozen: true, data }
             }
         }
         impl From<&[$type]> for BitSet {
             fn from(slice: &[$type]) -> Self {
-                let data: Vec<bool> = slice
+                let data: Vec<Word> = slice
                     .iter()
                     .map(|word| {
-                        let mut bits: Vec<bool> = Vec::new();
-                        for i in 0..$number {
-                            bits.push((word & (1 << i)) != 0);
+                        let mut data: Vec<Word> = Vec::new();
+
+                        let n: Result<Word, _> = (*word).try_into();
+
+                        match n {
+                            Ok(n) => data.push(n),
+                            Err(_) => {
+                                for shift in (0..$size).step_by(WORD_SIZE) {
+                                    #[allow(
+                                        clippy::cast_sign_loss,
+                                        clippy::cast_possible_truncation
+                                    )]
+                                    let word = (word >> shift) as Word;
+                                    data.push(word);
+                                }
+                            }
                         }
-                        bits
+                        data
                     })
-                    .collect::<Vec<Vec<bool>>>()
+                    .collect::<Vec<Vec<Word>>>()
                     .concat();
                 BitSet { frozen: true, data }
             }
         }
-        impl From<$type> for BitSet {
-            fn from(num: $type) -> Self {
-                let mut bits: Vec<bool> = Vec::new();
-                for i in 0..$number {
-                    bits.push((num & (1 << i)) != 0);
-                }
-                BitSet {
-                    frozen: true,
-                    data: bits,
-                }
+        impl From<Vec<$type>> for BitSet {
+            fn from(vec: Vec<$type>) -> Self {
+                let data: Vec<Word> = vec
+                    .into_iter()
+                    .map(|word| {
+                        let mut data: Vec<Word> = Vec::new();
+
+                        let n: Result<Word, _> = word.try_into();
+
+                        match n {
+                            Ok(n) => data.push(n),
+                            Err(_) => {
+                                for shift in (0..$size).step_by(WORD_SIZE) {
+                                    #[allow(
+                                        clippy::cast_sign_loss,
+                                        clippy::cast_possible_truncation
+                                    )]
+                                    let word = (word >> shift) as Word;
+                                    data.push(word);
+                                }
+                            }
+                        }
+                        data
+                    })
+                    .collect::<Vec<Vec<Word>>>()
+                    .concat();
+                BitSet { frozen: true, data }
             }
         }
     };
 }
 
-impl_from_iter_for_bitset!(u8, 8);
-impl_from_iter_for_bitset!(u16, 16);
-impl_from_iter_for_bitset!(u32, 32);
-impl_from_iter_for_bitset!(u64, 64);
-impl_from_iter_for_bitset!(u128, 128);
+impl_from_iter_for_bitset!(u8, u8::BITS);
+impl_from_iter_for_bitset!(u16, u16::BITS);
+impl_from_iter_for_bitset!(u32, u32::BITS);
+impl_from_iter_for_bitset!(u64, u64::BITS);
+impl_from_iter_for_bitset!(u128, u128::BITS);
 impl_from_iter_for_bitset!(usize, usize::BITS);
 
-impl_from_iter_for_bitset!(i8, 8);
-impl_from_iter_for_bitset!(i16, 16);
-impl_from_iter_for_bitset!(i32, 32);
-impl_from_iter_for_bitset!(i64, 64);
-impl_from_iter_for_bitset!(i128, 128);
+impl_from_iter_for_bitset!(i8, i8::BITS);
+impl_from_iter_for_bitset!(i16, i16::BITS);
+impl_from_iter_for_bitset!(i32, i32::BITS);
+impl_from_iter_for_bitset!(i64, i64::BITS);
+impl_from_iter_for_bitset!(i128, i128::BITS);
 impl_from_iter_for_bitset!(isize, isize::BITS);
 
 #[cfg(test)]
@@ -1200,7 +1272,7 @@ mod test {
     #[test]
     fn initial_state() {
         let bitset = BitSet::default();
-        assert_eq!(bitset.length(), 0);
+        assert_eq!(bitset.len(), 0);
         assert_eq!(bitset.data, vec![]);
     }
 
@@ -1230,7 +1302,7 @@ mod test {
     fn clear_bits() {
         let mut bitset = BitSet::default();
 
-        bitset.insert_range(2..6).unwrap();
+        bitset.insert(2..6).unwrap();
 
         bitset.clear(3).unwrap();
 
