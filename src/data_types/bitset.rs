@@ -1,11 +1,13 @@
-use thiserror::Error;
-
-use crate::DataResult;
-
 ////////////////////////////////////////////////////////////////////////////////
 // This section was taken from https://github.com/bluss/odds/blob/master/src/range.rs
 // Although it is not a direct copy, it was heavily inspired by it.
-use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use std::{
+    fmt::Debug,
+    ops::{
+        BitAnd, BitOr, BitXor, Not, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo,
+        RangeToInclusive,
+    },
+};
 
 /// **`IndexRange`** is implemented by Rust's built-in range types, produced
 /// by range syntax like `..`, `a..`, `..b`, `c..d`, `..=e` or `f..=g`.
@@ -20,10 +22,10 @@ pub trait IndexRange<T = usize> {
     }
 }
 
-impl<T> IndexRange<T> for RangeFull {
+impl<T: Copy> IndexRange<T> for RangeFull {
     #[inline]
     fn range(&self) -> Option<(Option<T>, Option<T>, bool)> {
-        Some((None, None, false))
+        Some((None, None, true))
     }
 }
 
@@ -62,28 +64,14 @@ impl<T: Copy> IndexRange<T> for RangeToInclusive<T> {
     }
 }
 
-macro_rules! impl_index {
-    ($($t:ty),*) => {
-        $(
-            impl IndexRange<$t> for $t {
-                #[inline]
-                fn index(&self) -> Option<$t> {
-                    Some(*self)
-                }
-            }
-        )*
-    };
+impl IndexRange<usize> for usize {
+    #[inline]
+    fn index(&self) -> Option<usize> {
+        Some(*self)
+    }
 }
-
-impl_index!(usize, u8, u16, u32, u64, u128);
 
 ////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
-pub enum BitSetError {
-    #[error("Attempted to grow a frozen BitSet")]
-    AttemptToGrowFrozen,
-}
 
 /// This defines the word size.
 /// It should be compatible with all integer types
@@ -104,10 +92,7 @@ pub enum BitSetError {
 ///
 /// Changing this should NOT change the behavior of the [`BitSet`]
 /// (but it may change the performance, memory usage, and metrics, like the [`BitSet`] size or capacity).
-type Word = usize;
-
-/// Word size in bits
-pub const WORD_SIZE: usize = Word::BITS as usize;
+type Word = u8;
 
 /// This struct implements a vector of bits that grows as needed. Each
 /// component of the bit set has a `boolean` value. The
@@ -118,13 +103,16 @@ pub const WORD_SIZE: usize = Word::BITS as usize;
 /// logical exclusive OR operations.
 ///
 /// By default, all bits in the set initially have the value `false`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Eq, PartialOrd, Ord, Default)]
 pub struct BitSet {
     data: Vec<Word>,
-    frozen: bool,
 }
 
 impl BitSet {
+    /// Word size in bits
+    pub const WORD_SIZE: usize = Word::BITS as usize;
+    const ONE: Word = 1;
+
     /// Creates a new bit set. All bits are initially `false`.
     #[must_use]
     pub fn new() -> Self {
@@ -133,91 +121,29 @@ impl BitSet {
 
     /// Creates a new bitset with at least `n` bits.
     ///
-    /// All bits are initially `false` and the [`BitSet`] size is frozen by default to the specified size.
-    ///
-    /// You can unfreeze the [`BitSet`] size with [`BitSet::unfreeze`].
+    /// All bits are initially `false`.
     #[must_use]
-    pub fn with_capacity(n: usize) -> Self {
-        if n == 0 {
+    pub fn with_capacity(nbits: usize) -> Self {
+        if nbits == 0 {
             return BitSet::default();
         }
 
-        let mut data = vec![Word::default(); n / WORD_SIZE];
+        let mut data = vec![Word::default(); Self::word_index(nbits) + 1];
         data.shrink_to_fit();
-        BitSet { data, frozen: true }
-    }
-
-    /// Freezes the size of the [`BitSet`] to the logical size in words of the [`BitSet`].
-    ///
-    /// This method is useful in situations where it is known that a [`BitSet`] will
-    /// not need to be expanded to accommodate additional words.
-    ///
-    /// Attempting to grow a frozen [`BitSet`] will return an [`BitSetError::AttemptToGrowFrozen`] error.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
-    ///
-    /// {
-    ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.grow(5), Ok(()));
-    ///
-    ///   bitset.freeze();
-    ///   assert_eq!(bitset.grow(5), Err(BitSetError::AttemptToGrowFrozen));
-    /// }
-    /// ```
-    pub fn freeze(&mut self) {
-        self.frozen = true;
-    }
-
-    /// Unfreezes the size of the [`BitSet`].
-    ///
-    /// This allows the [`BitSet`] to grow as needed when new words are added.
-    ///
-    /// When working with a unfrozen [`BitSet`], it is garanteed that the functions will not return [`BitSetError::AttemptToGrowFrozen`].
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
-    ///
-    /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.grow(5), Err(BitSetError::AttemptToGrowFrozen));
-    ///
-    ///   bitset.unfreeze();
-    ///   assert_eq!(bitset.grow(5), Ok(()));
-    /// }
-    /// ```
-    pub fn unfreeze(&mut self) {
-        self.frozen = false;
+        BitSet { data }
     }
 
     /// Trims the set to the last enabled bit.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// Consider the following [`BitSet`]: `0b0100_1001_00`
-    ///
-    /// After calling [`BitSet::trim`], the [`BitSet`] will look like: `0b0100_1001`
     pub fn trim(&mut self) {
         for (i, word) in self.data.iter().enumerate().rev() {
             if *word == 0 {
-                self.data.truncate(i + 1);
-                return;
+                self.data.truncate(i);
+                break;
             }
         }
     }
 
     /// Clear all bits in the set
-    #[allow(clippy::missing_panics_doc)]
     pub fn flush(&mut self) {
         for word in &mut self.data {
             *word = Word::default();
@@ -228,31 +154,39 @@ impl BitSet {
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the set is frozen, this function will return an [`BitSetError::AttemptToGrowFrozen`] error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::with_capacity(10);
-    ///   bitset.unfreeze();
-    ///   assert_eq!(bitset.len(), 10);
+    ///   let len = bitset.len();
+    ///   assert_eq!(len, BitSet::word_index(bitset.capacity()));
     ///
     ///   bitset.grow(10);
-    ///   assert_eq!(bitset.len(), 20);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(len * BitSet::WORD_SIZE + 10));
+    /// }
+    ///
+    /// {
+    ///   let mut bitset = BitSet::new();
+    ///   assert_eq!(bitset.len(), 0);
+    ///  
+    ///   bitset.grow(10);
+    ///   let len = bitset.len();
+    ///   assert_eq!(len, BitSet::word_index(10));
+    ///
+    ///   bitset.grow(10);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(len * BitSet::WORD_SIZE + 10));
     /// }
     /// ```
-    pub fn grow(&mut self, nbits: usize) -> DataResult<()> {
+    #[inline]
+    pub fn grow(&mut self, nbits: usize) {
         if nbits == 0 {
-            return Ok(());
+            return;
         }
-        self.grow_to(self.data.len() + nbits)
+        let grow_to = Self::word_index(self.capacity() + nbits);
+        self.data.resize_with(grow_to, Word::default);
     }
 
     /// Grows the set to the specified number of bits.
@@ -261,755 +195,432 @@ impl BitSet {
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the provided capacity is larger than the set current capacity, and the set is frozen, this function will return an [`BitSetError::AttemptToGrowFrozen`] error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::with_capacity(20);
-    ///   bitset.unfreeze();
-    ///   assert_eq!(bitset.length(), 20);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(20) + 1);
     ///
-    ///   bitset.grow_to(10);
-    ///   assert_eq!(bitset.length(), 20);
+    ///   bitset.grow_to_size(10);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(20) + 1);
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::with_capacity(10);
-    ///   bitset.unfreeze();
     ///
-    ///   assert_eq!(bitset.length(), 10);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(10) + 1);
     ///
-    ///   bitset.grow_to(20);
-    ///   assert_eq!(bitset.length(), 20);
+    ///   bitset.grow_to_size(20);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(20) + 1);
     /// }
     /// ```
-    pub fn grow_to(&mut self, capacity: usize) -> DataResult<()> {
+    #[inline]
+    pub fn grow_to_size(&mut self, capacity: usize) {
         if capacity == 0 {
-            return Ok(());
+            return;
         }
-        if self.data.len() < capacity {
-            if self.frozen {
-                return Err(BitSetError::AttemptToGrowFrozen)?;
-            }
-            self.data
-                .resize(self.data.len().max(capacity), Word::default());
+        let grow_to = Self::word_index(capacity) + 1;
+        let len = self.len();
+        if len < grow_to {
+            self.data.resize_with(grow_to, Word::default);
         }
-        Ok(())
     }
 
     /// Sets the specified bit to false.
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the bit index is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.insert(5), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
+    ///   let mut bitset = BitSet::new();
+    ///   bitset.insert(5);
+    ///   assert!(bitset.get(5));
     ///
-    ///   assert_eq!(bitset.clear(5), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(false));
-    ///
-    ///   assert_eq!(bitset.clear(15), Err(BitSetError::AttemptToGrowFrozen));
+    ///   bitset.clear(5);
+    ///   assert!(!bitset.get(5));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.clear(5), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
+    ///   bitset.insert(2..7);
+    ///   assert!(bitset.get(5));
+    ///
+    ///   bitset.clear(..5);
+    ///   assert!(!bitset.get(4));
+    ///   assert!(bitset.get(5));
     /// }
     /// ```
-    ///
-    /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
-    ///
-    /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.insert_range(2..7), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    ///
-    ///   assert_eq!(bitset.clear_range(..5), Ok(()));
-    ///   assert_eq!(bitset.get(4), Some(false));
-    ///
-    ///   assert_eq!(bitset.clear_range(..15), Err(BitSetError::AttemptToGrowFrozen));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    /// }
-    ///
-    /// {
-    ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.clear_range(..5), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    /// }
-    /// ```
-    pub fn clear<I: IndexRange>(&mut self, index: I) -> DataResult<()> {
-        self.set(index, false)
+    pub fn clear<I: IndexRange>(&mut self, index: I) {
+        self.set(index, false);
     }
 
     /// Sets the specified bit to true.
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the bit index is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.insert(5), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    ///
-    ///   assert_eq!(bitset.insert(15), Err(BitSetError::AttemptToGrowFrozen));
+    ///   let mut bitset = BitSet::new();
+    ///   bitset.insert(3);
+    ///   assert!(bitset.get(3));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.insert(5), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(5), Some(true));
-    /// }
-    /// ```
+    ///   bitset.insert(2..7);
+    ///   assert!(bitset.get(6));
+    ///   assert!(!bitset.get(7));
     ///
-    /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
-    ///
-    /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.insert_range(2..7), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    ///
-    ///   assert_eq!(bitset.insert_range(..15), Err(BitSetError::AttemptToGrowFrozen));
-    ///   assert_eq!(bitset.get(9), Some(false));
+    ///   bitset.insert(..15);
+    ///   assert!(bitset.get(9));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.insert_range(..5), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(4), Some(true));
+    ///   bitset.insert(..=5);
+    ///   assert!(bitset.get(4));
+    ///   assert!(bitset.get(5));
     /// }
     /// ```
-    pub fn insert<I: IndexRange>(&mut self, index: I) -> DataResult<()> {
-        self.set(index, true)
+    pub fn insert<I: IndexRange>(&mut self, index: I) {
+        self.set(index, true);
+    }
+
+    #[must_use]
+    #[inline(always)]
+    pub fn word_index(ibit: usize) -> usize {
+        (ibit - (ibit % Self::WORD_SIZE)) / Self::WORD_SIZE
     }
 
     /// Sets the specified bit to the given value.
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the bit index is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.set(5, true), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
+    ///   let mut bitset = BitSet::new();
+    ///   bitset.set(5, true);
+    ///   assert!(bitset.get(5));
     ///
-    ///   assert_eq!(bitset.set(5, false), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(false));
-    ///
-    ///   assert_eq!(bitset.set(15, true), Err(BitSetError::AttemptToGrowFrozen));
+    ///   bitset.set(5, false);
+    ///   assert!(!bitset.get(5));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.set(5, true), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(5), Some(true));
-    /// }
-    /// ```
+    ///   bitset.set(2..7, true);
+    ///   assert!(bitset.get(2));
+    ///   assert!(bitset.get(5));
+    ///   assert!(bitset.get(6));
     ///
-    /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    ///   assert!(!bitset.get(1));
+    ///   assert!(!bitset.get(7));
     ///
-    /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.set_range(2..7, true), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    ///   assert_eq!(bitset.get(1), Some(false));
-    ///
-    ///   assert_eq!(bitset.set_range(..5, false), Ok(()));
-    ///   assert_eq!(bitset.get(4), Some(false));
-    ///
-    ///   assert_eq!(bitset.set_range(..15, false), Err(BitSetError::AttemptToGrowFrozen));
-    ///   assert_eq!(bitset.get(5), Some(true));
+    ///   bitset.set(..5, false);
+    ///   assert!(!bitset.get(4));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.set_range(..5, true), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(4), Some(true));
+    ///   bitset.set(..5, true);
+    ///   assert!(bitset.get(4));
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
-    pub fn set<I: IndexRange>(&mut self, index: I, to: bool) -> DataResult<()> {
+    pub fn set<I: IndexRange>(&mut self, index: I, to: bool) {
         if let Some(index) = index.index() {
-            let index = index / WORD_SIZE;
-            let bit_index = index % WORD_SIZE;
+            let word_index = Self::word_index(index);
+            let bit_index = index % Self::WORD_SIZE;
 
-            self.grow_to(index + 1)?;
+            self.grow_to_size(index + 1);
 
-            self.data[index] |= Word::from(to) << bit_index;
+            let shift_pattern = Self::ONE << bit_index;
+
+            self.data[word_index] |= shift_pattern;
+
+            if !to {
+                self.data[word_index] ^= shift_pattern;
+            }
         }
         if let Some((start, end, inclusive)) = index.range() {
-            let bitset_len = self.len();
-            let len = bitset_len * WORD_SIZE;
+            let len = self.capacity();
             let start = start.unwrap_or(0);
-            let end = end.unwrap_or(len);
-
-            self.grow_to(end)?;
-
-            let starting_word_index = start / WORD_SIZE;
-            let ending_word_index = (bitset_len * WORD_SIZE) / end;
-            let shift_offset = start % WORD_SIZE;
-            let mut remaining_offset = end - start;
-
-            let mut shift = |e: usize, i: usize| {
-                let shift_pattern = if e == 0 {
-                    remaining_offset -= shift_offset;
-                    Word::MAX << shift_offset
-                } else if remaining_offset >= WORD_SIZE {
-                    remaining_offset -= WORD_SIZE;
-                    Word::MAX
-                } else {
-                    Word::MAX >> remaining_offset
-                };
-                self.data[i] |= shift_pattern;
-                if !to {
-                    self.data[i] ^= shift_pattern;
-                }
+            let end = match end {
+                Some(end) if inclusive => end + 1,
+                Some(end) => end,
+                None if inclusive => len,
+                None => len - 1,
             };
+            let width = end - start;
 
             if inclusive {
-                for (e, i) in (starting_word_index..=ending_word_index).enumerate() {
-                    shift(e, i);
-                }
+                self.grow_to_size(end - 1);
             } else {
-                for (e, i) in (starting_word_index..ending_word_index).enumerate() {
-                    shift(e, i);
+                self.grow_to_size(end);
+            }
+
+            let starting_word_index = Self::word_index(start);
+            let ending_word_index = Self::word_index(end);
+            let shift_offset = start % Self::WORD_SIZE;
+            let total_offset = shift_offset + width;
+            let mut remaining_offset = width;
+
+            for (e, word_index) in (starting_word_index..=ending_word_index).enumerate() {
+                let shift_pattern = if e == 0 && remaining_offset < Self::WORD_SIZE {
+                    remaining_offset -= shift_offset;
+
+                    let res = Word::MAX << shift_offset;
+
+                    if total_offset >= Self::WORD_SIZE {
+                        res
+                    } else {
+                        res ^ (res & (Word::MAX << total_offset))
+                    }
+                } else if remaining_offset >= Self::WORD_SIZE {
+                    remaining_offset -= Self::WORD_SIZE;
+                    Word::MAX
+                } else {
+                    let res = Word::MAX >> (Self::WORD_SIZE - remaining_offset);
+                    remaining_offset = 0;
+                    res
+                };
+
+                self.data[word_index] |= shift_pattern;
+                if !to {
+                    self.data[word_index] ^= shift_pattern;
+                }
+
+                if remaining_offset == 0 {
+                    break;
                 }
             }
         }
-        Ok(())
     }
 
     /// Inverts the specified bit.
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the bit index is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.flip(5), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
+    ///   let mut bitset = BitSet::new();
+    ///   bitset.flip(5);
+    ///   assert!(bitset.get(5));
     ///
-    ///   assert_eq!(bitset.flip(5), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(false));
-    ///
-    ///   assert_eq!(bitset.flip(15), Err(BitSetError::AttemptToGrowFrozen));
+    ///   bitset.flip(5);
+    ///   assert!(!bitset.get(5));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.flip(5), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(5), Some(true));
-    /// }
-    /// ```
+    ///   bitset.flip(2..7);
+    ///   assert!(bitset.get(4));
+    ///   assert!(bitset.get(5));
     ///
-    /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
-    ///
-    /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.flip_range(2..7), Ok(()));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    ///
-    ///   assert_eq!(bitset.flip_range(..5), Ok(()));
-    ///   assert_eq!(bitset.get(4), Some(false));
-    ///
-    ///   assert_eq!(bitset.flip_range(..15), Err(BitSetError::AttemptToGrowFrozen));
-    ///   assert_eq!(bitset.get(5), Some(true));
+    ///   bitset.flip(..5);
+    ///   assert!(!bitset.get(4));
+    ///   assert!(bitset.get(5));
     /// }
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.flip_range(..5), Ok(()));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(4), Some(true));
+    ///   bitset.flip(..5);
+    ///   assert!(bitset.get(4));
+    ///   assert!(!bitset.get(5));
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
-    pub fn flip<I: IndexRange>(&mut self, index: I) -> DataResult<()> {
+    pub fn flip<I: IndexRange>(&mut self, index: I) {
         if let Some(index) = index.index() {
-            self.set(index, !self.get(index).unwrap_or(false))?;
+            self.set(index, !self.get(index));
         }
         if let Some((start, end, inclusive)) = index.range() {
             let bitset_len = self.len();
-            let len = bitset_len * WORD_SIZE;
+            let len = bitset_len * Self::WORD_SIZE;
             let start = start.unwrap_or(0);
             let end = end.unwrap_or(len);
 
             if inclusive {
                 for i in start..=end {
-                    self.set(i, !self.get(i).unwrap_or(false))?;
+                    self.set(i, !self.get(i));
                 }
             } else {
                 for i in start..end {
-                    self.set(i, !self.get(i).unwrap_or(false))?;
+                    self.set(i, !self.get(i));
                 }
             }
         }
-        Ok(())
     }
 
     /// Sets the specified bit to the given value, returning its previous value.
     ///
     /// ---
     ///
-    /// ## Errors
-    ///
-    /// If the bit index is bigger than the set's length, the set will be grown to the specified index.
-    /// If the set is frozen, this function will then return an error.
-    ///
-    /// ---
-    ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
-    ///
-    /// {
-    ///   let mut bitset = BitSet::with_capacity(10);
-    ///   assert_eq!(bitset.put(5, true), Ok(Some(false)));
-    ///   assert_eq!(bitset.get(5), Some(true));
-    ///
-    ///   assert_eq!(bitset.put(5, false), Ok(Some(true)));
-    ///   assert_eq!(bitset.get(5), Some(false));
-    ///
-    ///   assert_eq!(bitset.put(15, true), Err(BitSetError::AttemptToGrowFrozen));
-    /// }
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.put(5, true), Ok(None));
-    ///   assert_eq!(bitset.length(), 6);
-    ///   assert_eq!(bitset.get(5), Some(true));
+    ///   assert_eq!(bitset.put(5, true), false);
+    ///   assert!(bitset.get(5));
+    ///
+    ///   assert_eq!(bitset.put(5, true), true);
+    ///   assert!(bitset.get(5));
+    ///
+    ///   assert_eq!(bitset.put(5, false), true);
+    ///   assert!(!bitset.get(5));
     /// }
     /// ```
-    pub fn put(&mut self, bit_index: usize, to: bool) -> DataResult<Option<bool>> {
+    pub fn put(&mut self, bit_index: usize, to: bool) -> bool {
         let previous = self.get(bit_index);
 
-        self.set(bit_index, to)?;
-        Ok(previous)
+        self.set(bit_index, to);
+        previous
     }
 
     /// Gets the value of the specified bit.
-    ///
-    /// This method returns `None` if the bit index is bigger than the set's length.
     #[must_use]
-    pub fn get(&self, bit_index: usize) -> Option<bool> {
-        let index = bit_index / WORD_SIZE;
-        let bit_index = bit_index % WORD_SIZE;
-        let bit = (self.data.get(index)? >> bit_index) & 1;
-        Some(bit == 1)
+    pub fn get(&self, bit_index: usize) -> bool {
+        let index = Self::word_index(bit_index);
+        let bit_index = bit_index % Self::WORD_SIZE;
+        let bit = (self.data.get(index).copied().unwrap_or_default() >> bit_index) & 1;
+        bit == 1
     }
 
-    /// Performs the logical operator `AND` in this set, using the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the specified set is bigger than this set, an attempt to grow this set will be made.
-    /// If the set is frozen, this function will then return an [`BitSetError::AttemptToGrowFrozen`] error.
+    /// Performs the logical operator `AND` in this set.
     ///
     /// ---
     ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset1 = BitSet::from(5);
     ///   let bitset2 = BitSet::from(3);
     ///
-    ///   bitset1.and(&bitset2);
-    ///
-    ///   assert_eq!(bitset1.data, BitSet::from(1).data);
-    ///   assert_eq!(5 & 3, 1);
+    ///   assert_eq!(bitset1.and(&bitset2), BitSet::from(5 & 3));
+    ///   assert_eq!(bitset1 & bitset2, BitSet::from(5 & 3));
     /// }
     /// ```
-    pub fn and(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.len() < set.len() {
-            self.grow_to(set.len())?;
+    #[must_use]
+    pub fn and(&self, set: &BitSet) -> BitSet {
+        let data = (0..self.data.len().max(set.data.len())).map(|i| {
+            let a = self.data.get(i).copied().unwrap_or_default();
+            let b = set.data.get(i).copied().unwrap_or_default();
+            a & b
+        });
+        BitSet {
+            data: data.collect(),
         }
-
-        for (i, bit) in set.data.iter().enumerate() {
-            self.data[i] &= *bit;
-        }
-
-        Ok(())
     }
 
-    /// Performs the logical operator `OR` in this set, using the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the specified set is bigger than this set, an attempt to grow this set will be made.
-    /// If the set is frozen, this function will then return an [`BitSetError::AttemptToGrowFrozen`] error.
+    /// Performs the logical operator `OR` in this set.
     ///
     /// ---
     ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset1 = BitSet::from(5);
     ///   let bitset2 = BitSet::from(3);
     ///  
-    ///   bitset1.or(&bitset2);
-    ///  
-    ///   assert_eq!(bitset1.data, BitSet::from(7).data);
-    ///   assert_eq!(5 | 3, 7);
+    ///   assert_eq!(bitset1.or(&bitset2), BitSet::from(5 | 3));
+    ///   assert_eq!(bitset1 | bitset2, BitSet::from(5 | 3));
     /// }
     /// ```
-    pub fn or(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.len() < set.len() {
-            self.grow_to(set.len())?;
+    #[must_use]
+    pub fn or(&self, set: &BitSet) -> BitSet {
+        let data = (0..self.data.len().max(set.data.len())).map(|i| {
+            let a = self.data.get(i).copied().unwrap_or_default();
+            let b = set.data.get(i).copied().unwrap_or_default();
+            a | b
+        });
+        BitSet {
+            data: data.collect(),
         }
-
-        for (i, bit) in set.data.iter().enumerate() {
-            self.data[i] |= *bit;
-        }
-
-        Ok(())
     }
 
-    /// Performs the logical operator `XOR` in this set, using the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the specified set is bigger than this set, an attempt to grow this set will be made.
-    /// If the set is frozen, this function will then return an [`BitSetError::AttemptToGrowFrozen`] error.
+    /// Performs the logical operator `XOR` in this set.
     ///
     /// ---
     ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset1 = BitSet::from(5);
     ///   let bitset2 = BitSet::from(3);
     ///
-    ///   bitset1.xor(&bitset2);
-    ///
-    ///   assert_eq!(bitset1.data, BitSet::from(6).data);
-    ///   assert_eq!(5 ^ 3, 6);
+    ///   assert_eq!(bitset1.xor(&bitset2), BitSet::from(5 ^ 3));
+    ///   assert_eq!(bitset1 ^ bitset2, BitSet::from(5 ^ 3));
     /// }
     /// ```
-    pub fn xor(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.len() < set.len() {
-            self.grow_to(set.len())?;
+    #[must_use]
+    pub fn xor(&self, set: &BitSet) -> BitSet {
+        let data = (0..self.data.len().max(set.data.len())).map(|i| {
+            let a = self.data.get(i).copied().unwrap_or_default();
+            let b = set.data.get(i).copied().unwrap_or_default();
+            a ^ b
+        });
+        BitSet {
+            data: data.collect(),
         }
-
-        for (i, bit) in set.data.iter().enumerate() {
-            self.data[i] ^= *bit;
-        }
-
-        Ok(())
     }
 
-    /// Performs the logical operator `AND NOT` in this set, using the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Errors
-    ///
-    /// If the specified set is bigger than this set, an attempt to grow this set will be made.
-    /// If the set is frozen, this function will then return an [`BitSetError::AttemptToGrowFrozen`] error.
+    /// Performs the logical operator `AND NOT` in this set.
     ///
     /// ---
     ///
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset1 = BitSet::from(5);
     ///   let bitset2 = BitSet::from(3);
     ///
-    ///   bitset1.and_not(&bitset2);
-    ///
-    ///   assert_eq!(bitset1.data, BitSet::from(4).data);
-    ///   assert_eq!(5 & !3, 4);
+    ///   assert_eq!(bitset1.and_not(&bitset2), BitSet::from(5 & !3));
     /// }
     /// ```
-    pub fn and_not(&mut self, set: &BitSet) -> DataResult<()> {
-        if self.len() < set.len() {
-            self.grow_to(set.len())?;
+    #[must_use]
+    pub fn and_not(&self, set: &BitSet) -> BitSet {
+        let data = (0..self.data.len().max(set.data.len())).map(|i| {
+            let a = self.data.get(i).copied().unwrap_or_default();
+            let b = set.data.get(i).copied().unwrap_or_default();
+            a & !b
+        });
+        BitSet {
+            data: data.collect(),
         }
-
-        for (i, bit) in set.data.iter().enumerate() {
-            self.data[i] &= !*bit;
-        }
-
-        Ok(())
-    }
-
-    /// Clones this set, and then performs the logical operator `AND` on the cloned set, using the specified set.
-    ///
-    /// This method does not mutate this set.
-    ///
-    /// If the specified set is bigger than the cloned set, the cloned set will grow, even if this set is frozen.
-    ///
-    /// [`BitSet`]'s returned by this method are unfrozen by default.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   let bitset1 = BitSet::from(5);
-    ///   let bitset2 = BitSet::from(3);
-    ///
-    ///   let result_bitset = bitset1.cloned_and(&bitset2);
-    ///
-    ///   assert_eq!(result_bitset.data, BitSet::from(1).data);
-    ///   assert_eq!(5 & 3, 1);
-    /// }
-    /// ```
-    #[allow(clippy::missing_panics_doc)]
-    #[must_use]
-    pub fn cloned_and(&self, set: &BitSet) -> BitSet {
-        let mut clone = self.clone();
-        clone.unfreeze();
-        clone.and(set).expect("Should never panic on grow");
-        clone
-    }
-
-    /// Clones this set, and then performs the logical operator `OR` on the cloned set, using the specified set.
-    ///
-    /// This method does not mutate this set.
-    ///
-    /// If the specified set is bigger than the cloned set, the cloned set will grow, even if this set is frozen.
-    ///
-    /// [`BitSet`]'s returned by this method are unfrozen by default.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   let bitset1 = BitSet::from(5);
-    ///   let bitset2 = BitSet::from(3);
-    ///  
-    ///   let result_bitset = bitset1.cloned_or(&bitset2);
-    ///  
-    ///   assert_eq!(result_bitset.data, BitSet::from(7).data);
-    ///   assert_eq!(5 | 3, 7);
-    /// }
-    /// ```
-    #[allow(clippy::missing_panics_doc)]
-    #[must_use]
-    pub fn cloned_or(&self, set: &BitSet) -> BitSet {
-        let mut clone = self.clone();
-        clone.unfreeze();
-        clone.or(set).expect("Should never panic on grow");
-        clone
-    }
-
-    /// Clones this set, and then performs the logical operator `XOR` on the cloned set, using the specified set.
-    ///
-    /// This method does not mutate this set.
-    ///
-    /// If the specified set is bigger than the cloned set, the cloned set will grow, even if this set is frozen.
-    ///
-    /// [`BitSet`]'s returned by this method are unfrozen by default.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   let bitset1 = BitSet::from(5);
-    ///   let bitset2 = BitSet::from(3);
-    ///
-    ///   let result_bitset = bitset1.cloned_xor(&bitset2);
-    ///
-    ///   assert_eq!(result_bitset.data, BitSet::from(6).data);
-    ///   assert_eq!(5 ^ 3, 6);
-    /// }
-    /// ```
-    #[allow(clippy::missing_panics_doc)]
-    #[must_use]
-    pub fn cloned_xor(&self, set: &BitSet) -> BitSet {
-        let mut clone = self.clone();
-        clone.unfreeze();
-        clone.xor(set).expect("Should never panic on grow");
-        clone
-    }
-
-    /// Clones this set, and then performs the logical operator `AND NOT` on the cloned set, using the specified set.
-    ///
-    /// This method does not mutate this set.
-    ///
-    /// If the specified set is bigger than the cloned set, the cloned set will grow, even if this set is frozen.
-    ///
-    /// [`BitSet`]'s returned by this method are unfrozen by default.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   let bitset1 = BitSet::from(5);
-    ///   let bitset2 = BitSet::from(3);
-    ///
-    ///   let result_bitset = bitset1.cloned_and_not(&bitset2);
-    ///
-    ///   assert_eq!(result_bitset.data, BitSet::from(4).data);
-    ///   assert_eq!(5 & !3, 4);
-    /// }
-    /// ```
-    #[allow(clippy::missing_panics_doc)]
-    #[must_use]
-    pub fn cloned_and_not(&self, set: &BitSet) -> BitSet {
-        let mut clone = self.clone();
-        clone.unfreeze();
-        clone.and_not(set).expect("Should never panic on grow");
-        clone
-    }
-
-    #[must_use]
-    pub fn intersects(&self, set: &BitSet) -> bool {
-        todo!()
-    }
-
-    /// Returns true if this set is a subset of the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   todo!("Implement this")
-    /// }
-    /// ```
-    #[must_use]
-    pub fn is_subset(&self, set: &BitSet) -> bool {
-        todo!()
-        // self.data.iter().zip(set.data.iter()).all(|(x, y)| !x && !y)
-        //     && self.data.iter().skip(set.data.len()).all(|x| !(*x))
-    }
-
-    /// Returns true if this set is a superset of the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   todo!("Implement this")
-    /// }
-    /// ```
-    #[must_use]
-    pub fn is_superset(&self, set: &BitSet) -> bool {
-        todo!()
-    }
-
-    /// Returns true if this set has no bits in common with the specified set.
-    ///
-    /// ---
-    ///
-    /// ## Example
-    ///
-    /// ```
-    /// use crate::protocol::data_types::BitSet;
-    ///
-    /// {
-    ///   todo!("Implement this")
-    /// }
-    /// ```
-    #[must_use]
-    pub fn is_disjoint(&self, set: &BitSet) -> bool {
-        todo!()
-        // self.data.iter().zip(set.data.iter()).all(|(x, y)| !(x & y))
     }
 
     /// Returns true if the set is empty
@@ -1021,7 +632,7 @@ impl BitSet {
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::new();
@@ -1037,6 +648,7 @@ impl BitSet {
     /// }
     /// ```
     #[must_use]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.data.len() == 0
     }
@@ -1050,7 +662,7 @@ impl BitSet {
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::{BitSet, BitSetError};
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::new();
@@ -1061,7 +673,7 @@ impl BitSet {
     ///   bitset.clear(5);
     ///   assert!(bitset.is_clear());
     ///
-    ///   bitset.insert_range(2..9);
+    ///   bitset.insert(2..9);
     ///   assert!(!bitset.is_clear());
     ///
     ///   bitset.flush();
@@ -1085,7 +697,7 @@ impl BitSet {
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::new();
@@ -1093,14 +705,13 @@ impl BitSet {
     ///   bitset.insert(10);
     ///   assert!(!bitset.is_full());
     ///
-    ///   bitset.insert_range(..);
-    ///   assert_eq!(bitset.data, vec![true; bitset.length()]);
+    ///   bitset.insert(..);
     ///   assert!(bitset.is_full());
     /// }
     /// ```
     #[must_use]
     pub fn is_full(&self) -> bool {
-        for word in &self.data {
+        for word in self.data.iter().rev() {
             if *word != Word::MAX {
                 return false;
             }
@@ -1108,7 +719,7 @@ impl BitSet {
         true
     }
 
-    /// Returns the length of the set
+    /// Returns the length of the set, in words.
     ///
     /// This includes trailing zeros.
     ///
@@ -1117,19 +728,45 @@ impl BitSet {
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   assert_eq!(bitset.length(), 0);
+    ///   assert_eq!(bitset.len(), 0);
     ///
     ///   bitset.insert(5);
-    ///   assert_eq!(bitset.length(), 6);
+    ///   assert_eq!(bitset.len(), BitSet::word_index(5) + 1);
     /// }
     /// ```
     #[must_use]
+    #[inline(always)]
     pub fn len(&self) -> usize {
-        self.data.len() * WORD_SIZE
+        self.data.len()
+    }
+
+    /// Returns the length of the set, in bits.
+    ///
+    /// This includes trailing zeros.
+    ///
+    /// ---
+    ///
+    /// ## Example
+    ///
+    /// ```
+    /// use crate::redstone_signal::data_types::BitSet;
+    ///
+    /// {
+    ///   let mut bitset = BitSet::new();
+    ///   assert_eq!(bitset.capacity(), 0);
+    ///
+    ///   bitset.insert(5);
+    ///   assert_eq!(bitset.capacity(), (BitSet::word_index(5) + 1) * BitSet::WORD_SIZE);
+    /// }
+    /// ```
+    #[must_use]
+    #[inline(always)]
+    pub fn capacity(&self) -> usize {
+        self.len() * Self::WORD_SIZE
     }
 
     /// Returns the size of the set in words, excluding trailing zeros
@@ -1139,132 +776,229 @@ impl BitSet {
     /// ## Example
     ///
     /// ```
-    /// use crate::protocol::data_types::BitSet;
+    /// use crate::redstone_signal::data_types::BitSet;
     ///
     /// {
     ///   let mut bitset = BitSet::new();
     ///   assert_eq!(bitset.size(), 0);
+    ///   println!("{bitset:?}");
     ///   
-    ///   bitset.insert_range(5..15);
-    ///   assert_eq!(bitset.size(), 15);
+    ///   bitset.insert(5..15);
+    ///   assert_eq!(bitset.size(), BitSet::word_index(15) + 1);
     ///   
-    ///   bitset.clear_range(10..);
-    ///   assert_eq!(bitset.size(), 10);
+    ///   bitset.clear(10..);
+    ///   assert_eq!(bitset.size(), BitSet::word_index(9) + 1);
     ///
     ///   bitset.trim();
-    ///   assert_eq!(bitset.size(), 10);
+    ///   assert_eq!(bitset.size(), BitSet::word_index(9) + 1);
+    ///
+    ///   bitset.flush();
+    ///   assert_eq!(bitset.size(), 0);
     /// }
     /// ```
     #[must_use]
+    #[inline]
     pub fn size(&self) -> usize {
         let mut size = self.len();
         for bit in self.data.iter().rev() {
             if *bit == 0 {
+                size -= 1;
+            } else {
                 break;
             }
-            size -= 1;
         }
         size
     }
 }
 
-/// This macro implements the From<$type> trait for [`BitSet`]
+/// This macro implements the `From<$type>`, `From<Vec<$type>>` and `From<&[$type]>` trait for [`BitSet`]
 macro_rules! impl_from_iter_for_bitset {
-    ($type:ty, $size:expr) => {
-        impl From<$type> for BitSet {
-            fn from(num: $type) -> Self {
-                let mut data: Vec<Word> = Vec::new();
+    ($(($type:ty, $mod:ident)),*) => {
+        $(
+            pub mod $mod {
+                use super::*;
 
-                let n: Result<Word, _> = num.try_into();
+                fn impl_data(num: $type) -> Vec<Word> {
+                    let mut data: Vec<Word> = Vec::new();
 
-                match n {
-                    Ok(n) => data.push(n),
-                    Err(_) => {
-                        for shift in (0..$size).step_by(WORD_SIZE) {
-                            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                            let word = (num >> shift) as Word;
-                            data.push(word);
+                    let word: Result<Word, _> = num.try_into();
+
+                    match word {
+                        Ok(n) => data.push(n),
+                        Err(_) => {
+                            for shift in (0..<$type>::BITS).step_by(BitSet::WORD_SIZE) {
+                                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                                let word: Word = (num >> shift) as Word;
+                                data.push(word);
+                            }
+                        }
+                    }
+
+                    data
+                }
+
+                impl From<$type> for BitSet {
+                    fn from(num: $type) -> Self {
+                        BitSet {
+                            data: impl_data(num)
                         }
                     }
                 }
-
-                BitSet { frozen: true, data }
+                impl From<&[$type]> for BitSet {
+                    fn from(slice: &[$type]) -> Self {
+                        let data: Vec<Word> = slice
+                            .iter()
+                            .map(|word| {
+                                let num = *word;
+                                impl_data(num)
+                            })
+                            .collect::<Vec<Vec<Word>>>()
+                            .concat();
+                        BitSet { data }
+                    }
+                }
+                impl From<Vec<$type>> for BitSet {
+                    fn from(vec: Vec<$type>) -> Self {
+                        let data: Vec<Word> = vec
+                            .into_iter()
+                            .map(|num| {
+                                impl_data(num)
+                            })
+                            .collect::<Vec<Vec<Word>>>()
+                            .concat();
+                        BitSet { data }
+                    }
+                }
             }
-        }
-        impl From<&[$type]> for BitSet {
-            fn from(slice: &[$type]) -> Self {
-                let data: Vec<Word> = slice
-                    .iter()
-                    .map(|word| {
-                        let mut data: Vec<Word> = Vec::new();
-
-                        let n: Result<Word, _> = (*word).try_into();
-
-                        match n {
-                            Ok(n) => data.push(n),
-                            Err(_) => {
-                                for shift in (0..$size).step_by(WORD_SIZE) {
-                                    #[allow(
-                                        clippy::cast_sign_loss,
-                                        clippy::cast_possible_truncation
-                                    )]
-                                    let word = (word >> shift) as Word;
-                                    data.push(word);
-                                }
-                            }
-                        }
-                        data
-                    })
-                    .collect::<Vec<Vec<Word>>>()
-                    .concat();
-                BitSet { frozen: true, data }
-            }
-        }
-        impl From<Vec<$type>> for BitSet {
-            fn from(vec: Vec<$type>) -> Self {
-                let data: Vec<Word> = vec
-                    .into_iter()
-                    .map(|word| {
-                        let mut data: Vec<Word> = Vec::new();
-
-                        let n: Result<Word, _> = word.try_into();
-
-                        match n {
-                            Ok(n) => data.push(n),
-                            Err(_) => {
-                                for shift in (0..$size).step_by(WORD_SIZE) {
-                                    #[allow(
-                                        clippy::cast_sign_loss,
-                                        clippy::cast_possible_truncation
-                                    )]
-                                    let word = (word >> shift) as Word;
-                                    data.push(word);
-                                }
-                            }
-                        }
-                        data
-                    })
-                    .collect::<Vec<Vec<Word>>>()
-                    .concat();
-                BitSet { frozen: true, data }
-            }
-        }
+        )*
     };
 }
 
-impl_from_iter_for_bitset!(u8, u8::BITS);
-impl_from_iter_for_bitset!(u16, u16::BITS);
-impl_from_iter_for_bitset!(u32, u32::BITS);
-impl_from_iter_for_bitset!(u64, u64::BITS);
-impl_from_iter_for_bitset!(u128, u128::BITS);
-impl_from_iter_for_bitset!(usize, usize::BITS);
+impl_from_iter_for_bitset!(
+    (u8, u8),
+    (u16, u16),
+    (u32, u32),
+    (u64, u64),
+    (u128, u128),
+    (usize, usize),
+    (i8, i8),
+    (i16, i16),
+    (i32, i32),
+    (i64, i64),
+    (i128, i128),
+    (isize, isize)
+);
 
-impl_from_iter_for_bitset!(i8, i8::BITS);
-impl_from_iter_for_bitset!(i16, i16::BITS);
-impl_from_iter_for_bitset!(i32, i32::BITS);
-impl_from_iter_for_bitset!(i64, i64::BITS);
-impl_from_iter_for_bitset!(i128, i128::BITS);
-impl_from_iter_for_bitset!(isize, isize::BITS);
+fn impl_bool_data(data: &[bool]) -> Vec<Word> {
+    let mut vec = Vec::new();
+    for chunk in data.chunks(BitSet::WORD_SIZE) {
+        let mut byte = Word::default();
+        for (i, &bit) in chunk.iter().enumerate() {
+            if bit {
+                byte |= 1 << i;
+            }
+        }
+        vec.push(byte);
+    }
+    vec
+}
+
+impl From<&[bool]> for BitSet {
+    fn from(slice: &[bool]) -> Self {
+        BitSet {
+            data: impl_bool_data(slice),
+        }
+    }
+}
+
+impl From<Vec<bool>> for BitSet {
+    fn from(slice: Vec<bool>) -> Self {
+        BitSet {
+            data: impl_bool_data(&slice),
+        }
+    }
+}
+
+impl BitAnd for BitSet {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        self.and(&rhs)
+    }
+}
+
+impl BitAnd<&BitSet> for BitSet {
+    type Output = BitSet;
+
+    fn bitand(self, rhs: &BitSet) -> Self::Output {
+        self.and(rhs)
+    }
+}
+
+impl BitOr for BitSet {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self.or(&rhs)
+    }
+}
+
+impl BitOr<&BitSet> for BitSet {
+    type Output = BitSet;
+
+    fn bitor(self, rhs: &BitSet) -> Self::Output {
+        self.or(rhs)
+    }
+}
+
+impl BitXor for BitSet {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        self.xor(&rhs)
+    }
+}
+
+impl BitXor<&BitSet> for BitSet {
+    type Output = BitSet;
+
+    fn bitxor(self, rhs: &BitSet) -> Self::Output {
+        self.xor(rhs)
+    }
+}
+
+impl Not for BitSet {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        BitSet {
+            data: self.data.into_iter().map(|word| !word).collect(),
+        }
+    }
+}
+
+impl Not for &BitSet {
+    type Output = BitSet;
+
+    fn not(self) -> Self::Output {
+        BitSet {
+            data: self.data.iter().map(|word| !word).collect(),
+        }
+    }
+}
+
+impl PartialEq for BitSet {
+    fn eq(&self, other: &Self) -> bool {
+        for i in 0..self.data.len().max(other.data.len()) {
+            let a = self.data.get(i).copied().unwrap_or_default();
+            let b = other.data.get(i).copied().unwrap_or_default();
+            if a != b {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 #[cfg(test)]
 mod test {
@@ -1280,37 +1014,38 @@ mod test {
     fn set_bits() {
         let mut bitset = BitSet::default();
 
-        bitset.insert(0).unwrap();
-        bitset.insert(2).unwrap();
-        bitset.insert(5).unwrap();
-        bitset.insert(10).unwrap();
+        bitset.insert(0);
+        bitset.insert(2);
+        bitset.insert(5);
+        bitset.insert(10);
 
-        assert!(bitset.get(0).unwrap());
-        assert!(bitset.get(2).unwrap());
-        assert!(bitset.get(5).unwrap());
-        assert!(bitset.get(10).unwrap());
+        assert!(bitset.get(0));
+        assert!(bitset.get(2));
+        assert!(bitset.get(5));
+        assert!(bitset.get(10));
 
-        assert!(!bitset.get(1).unwrap());
-        assert!(!bitset.get(3).unwrap());
-        assert!(!bitset.get(6).unwrap());
-        assert!(!bitset.get(9).unwrap());
-
-        assert_eq!(bitset.get(11), None);
+        assert!(!bitset.get(1));
+        assert!(!bitset.get(3));
+        assert!(!bitset.get(6));
+        assert!(!bitset.get(9));
     }
 
     #[test]
     fn clear_bits() {
         let mut bitset = BitSet::default();
 
-        bitset.insert(2..6).unwrap();
+        bitset.insert(2..6);
 
-        bitset.clear(3).unwrap();
+        bitset.clear(3);
 
-        assert!(!bitset.get(3).unwrap());
+        assert!(!bitset.get(3));
 
-        assert!(bitset.get(2).unwrap());
-        assert!(bitset.get(4).unwrap());
-        assert!(bitset.get(5).unwrap());
+        assert!(bitset.get(2));
+        assert!(bitset.get(4));
+        assert!(bitset.get(5));
+
+        assert!(!bitset.get(6));
+        assert!(!bitset.get(7));
     }
 
     #[test]
@@ -1318,23 +1053,17 @@ mod test {
         let bitset1 = BitSet::from(5);
         let bitset2 = BitSet::from(3);
 
-        let result_bitset = bitset1.cloned_and(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(1).data);
+        assert_eq!(bitset1 & bitset2, BitSet::from(5 & 3));
 
         let bitset1 = BitSet::from(8);
         let bitset2 = BitSet::from(9);
 
-        let result_bitset = bitset1.cloned_and(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(8).data);
+        assert_eq!(bitset1 & bitset2, BitSet::from(8 & 9));
 
         let bitset1 = BitSet::from(2645);
         let bitset2 = BitSet::from(4568);
 
-        let result_bitset = bitset1.cloned_and(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(80).data);
+        assert_eq!(bitset1 & bitset2, BitSet::from(2645 & 4568));
     }
 
     #[test]
@@ -1342,23 +1071,17 @@ mod test {
         let bitset1 = BitSet::from(5);
         let bitset2 = BitSet::from(3);
 
-        let result_bitset = bitset1.cloned_or(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(7).data);
+        assert_eq!(bitset1 | bitset2, BitSet::from(5 | 3));
 
         let bitset1 = BitSet::from(8);
         let bitset2 = BitSet::from(9);
 
-        let result_bitset = bitset1.cloned_or(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(9).data);
+        assert_eq!(bitset1 | bitset2, BitSet::from(8 | 9));
 
         let bitset1 = BitSet::from(2645);
         let bitset2 = BitSet::from(4568);
 
-        let result_bitset = bitset1.cloned_or(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(7133).data);
+        assert_eq!(bitset1 | bitset2, BitSet::from(2645 | 4568));
     }
 
     #[test]
@@ -1366,23 +1089,17 @@ mod test {
         let bitset1 = BitSet::from(5);
         let bitset2 = BitSet::from(3);
 
-        let result_bitset = bitset1.cloned_xor(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(6).data);
+        assert_eq!(bitset1 ^ bitset2, BitSet::from(5 ^ 3));
 
         let bitset1 = BitSet::from(8);
         let bitset2 = BitSet::from(9);
 
-        let result_bitset = bitset1.cloned_xor(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(1).data);
+        assert_eq!(bitset1 ^ bitset2, BitSet::from(8 ^ 9));
 
         let bitset1 = BitSet::from(2645);
         let bitset2 = BitSet::from(4568);
 
-        let result_bitset = bitset1.cloned_xor(&bitset2);
-
-        assert_eq!(result_bitset.data, BitSet::from(7053).data);
+        assert_eq!(bitset1 ^ bitset2, BitSet::from(2645 ^ 4568));
     }
 
     #[test]
@@ -1390,22 +1107,22 @@ mod test {
         let bitset1 = BitSet::from(5);
         let bitset2 = BitSet::from(3);
 
-        let result_bitset = bitset1.cloned_and_not(&bitset2);
+        let result_bitset = bitset1.and_not(&bitset2);
 
-        assert_eq!(result_bitset.data, BitSet::from(4).data);
+        assert_eq!(result_bitset, BitSet::from(5 & !3));
 
         let bitset1 = BitSet::from(8);
         let bitset2 = BitSet::from(9);
 
-        let result_bitset = bitset1.cloned_and_not(&bitset2);
+        let result_bitset = bitset1.and_not(&bitset2);
 
-        assert_eq!(result_bitset.data, BitSet::from(0).data);
+        assert_eq!(result_bitset, BitSet::from(8 & !9));
 
         let bitset1 = BitSet::from(2645);
         let bitset2 = BitSet::from(4568);
 
-        let result_bitset = bitset1.cloned_and_not(&bitset2);
+        let result_bitset = bitset1.and_not(&bitset2);
 
-        assert_eq!(result_bitset.data, BitSet::from(2565).data);
+        assert_eq!(result_bitset, BitSet::from(2645 & !4568));
     }
 }

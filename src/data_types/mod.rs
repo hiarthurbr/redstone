@@ -84,8 +84,6 @@ pub enum Errors {
     StringError(#[from] StringError),
     #[error("SlotDataError: {0}")]
     SlotDataError(#[from] SlotDataError),
-    #[error("BitSetError: {0}")]
-    BitSetError(#[from] BitSetError),
     #[error("BooleanError: {0}")]
     BooleanError(#[from] BooleanError),
     #[error("PositionError: {0}")]
