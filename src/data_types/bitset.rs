@@ -347,7 +347,7 @@ impl BitSet {
             let word_index = Self::word_index(index);
             let bit_index = index % Self::WORD_SIZE;
 
-            self.grow_to_size(index + 1);
+            self.grow_to_size(if index == 0 { 1 } else { index });
 
             let shift_pattern = Self::ONE << bit_index;
 
@@ -364,12 +364,12 @@ impl BitSet {
                 Some(end) if inclusive => end + 1,
                 Some(end) => end,
                 None if inclusive => len,
-                None => len - 1,
+                None => len,
             };
             let width = end - start;
 
             if inclusive {
-                self.grow_to_size(end - 1);
+                self.grow_to_size(end.saturating_sub(1));
             } else {
                 self.grow_to_size(end);
             }
@@ -443,9 +443,17 @@ impl BitSet {
     ///
     /// {
     ///   let mut bitset = BitSet::new();
-    ///   bitset.flip(..5);
+    ///   bitset.flip(..=5);
     ///   assert!(bitset.get(4));
-    ///   assert!(!bitset.get(5));
+    ///   assert!(bitset.get(5));
+    ///   assert!(!bitset.get(6));
+    /// }
+    ///
+    /// {
+    ///   let mut bitset = BitSet::new();
+    ///   bitset.flip(..=BitSet::WORD_SIZE);
+    ///   assert!(bitset.get(BitSet::WORD_SIZE));
+    ///   assert!(!bitset.get(BitSet::WORD_SIZE + 1));
     /// }
     /// ```
     #[allow(clippy::needless_pass_by_value)]
@@ -457,7 +465,12 @@ impl BitSet {
             let bitset_len = self.len();
             let len = bitset_len * Self::WORD_SIZE;
             let start = start.unwrap_or(0);
-            let end = end.unwrap_or(len);
+            let end = match end {
+                Some(end) if inclusive => end,
+                Some(end) => end,
+                None if inclusive => len - 1,
+                None => len,
+            };
 
             if inclusive {
                 for i in start..=end {
@@ -504,7 +517,10 @@ impl BitSet {
     pub fn get(&self, bit_index: usize) -> bool {
         let index = Self::word_index(bit_index);
         let bit_index = bit_index % Self::WORD_SIZE;
-        let bit = (self.data.get(index).copied().unwrap_or_default() >> bit_index) & 1;
+
+        let byte = self.data.get(index).copied().unwrap_or_default();
+        let bit = (byte >> bit_index) & 1;
+
         bit == 1
     }
 
@@ -1002,12 +1018,229 @@ impl PartialEq for BitSet {
 
 #[cfg(test)]
 mod test {
-    use super::BitSet;
+    use super::{BitSet, Word};
     #[test]
     fn initial_state() {
         let bitset = BitSet::default();
         assert_eq!(bitset.len(), 0);
         assert_eq!(bitset.data, vec![]);
+    }
+
+    #[test]
+    fn grow() {
+        {
+            let mut bitset = BitSet::with_capacity(10);
+            let len = bitset.len();
+            assert_eq!(len, BitSet::word_index(bitset.capacity()));
+
+            bitset.grow(10);
+            assert_eq!(
+                bitset.len(),
+                BitSet::word_index(len * BitSet::WORD_SIZE + 10)
+            );
+        }
+
+        {
+            let mut bitset = BitSet::new();
+            assert_eq!(bitset.len(), 0);
+
+            bitset.grow(10);
+            let len = bitset.len();
+            assert_eq!(len, BitSet::word_index(10));
+
+            bitset.grow(10);
+            assert_eq!(
+                bitset.len(),
+                BitSet::word_index(len * BitSet::WORD_SIZE + 10)
+            );
+        }
+    }
+
+    #[test]
+    fn grow_to_size() {
+        {
+            let mut bitset = BitSet::with_capacity(20);
+            assert_eq!(bitset.len(), BitSet::word_index(20) + 1);
+
+            bitset.grow_to_size(10);
+            assert_eq!(bitset.len(), BitSet::word_index(20) + 1);
+        }
+
+        {
+            let mut bitset = BitSet::with_capacity(10);
+
+            assert_eq!(bitset.len(), BitSet::word_index(10) + 1);
+
+            bitset.grow_to_size(20);
+            assert_eq!(bitset.len(), BitSet::word_index(20) + 1);
+        }
+    }
+
+    #[test]
+    fn clear() {
+        {
+            let mut bitset = BitSet::new();
+            bitset.insert(5);
+            assert!(bitset.get(5));
+
+            bitset.clear(5);
+            assert!(!bitset.get(5));
+        }
+
+        {
+            let mut bitset = BitSet::new();
+            bitset.insert(2..7);
+            assert!(bitset.get(5));
+
+            bitset.clear(..5);
+            assert!(!bitset.get(4));
+            assert!(bitset.get(5));
+        }
+
+        {
+            let mut bitset = BitSet::from(Word::MAX);
+            assert!(bitset.is_full());
+
+            bitset.clear(..);
+            assert!(bitset.is_clear());
+            assert_eq!(bitset.len(), 1);
+        }
+
+        {
+            let mut bitset = BitSet::from(vec![Word::MAX; 2]);
+            assert!(bitset.is_full());
+
+            bitset.clear(..=BitSet::WORD_SIZE);
+            assert!(!bitset.get(BitSet::WORD_SIZE));
+            assert!(bitset.get(BitSet::WORD_SIZE + 1));
+            assert_eq!(bitset.len(), 2);
+        }
+
+        {
+            let mut bitset = BitSet::from(Word::MAX);
+            assert!(bitset.is_full());
+
+            bitset.clear(1..);
+            assert!(bitset.get(0));
+            for i in 1..BitSet::WORD_SIZE {
+                assert!(!bitset.get(i), "Bit {i} is set");
+            }
+        }
+    }
+
+    #[test]
+    fn insert() {
+        {
+            let mut bitset = BitSet::new();
+            bitset.insert(3);
+            assert!(bitset.get(3));
+        }
+
+        {
+            let mut bitset = BitSet::new();
+            bitset.insert(2..7);
+            assert!(bitset.get(6));
+            assert!(!bitset.get(7));
+
+            bitset.insert(..15);
+            assert!(bitset.get(9));
+        }
+
+        {
+            let mut bitset = BitSet::new();
+            bitset.insert(..=5);
+            assert!(bitset.get(4));
+            assert!(bitset.get(5));
+        }
+
+        {
+            let mut bitset = BitSet::from(Word::default());
+            assert!(bitset.is_clear());
+
+            bitset.insert(..);
+            assert!(bitset.is_full());
+            assert_eq!(bitset.len(), 1);
+        }
+
+        {
+            let mut bitset = BitSet::from(vec![Word::default(); 2]);
+            assert!(bitset.is_clear());
+
+            bitset.insert(..=BitSet::WORD_SIZE);
+            assert!(bitset.get(BitSet::WORD_SIZE));
+            assert!(!bitset.get(BitSet::WORD_SIZE + 1));
+            assert_eq!(bitset.len(), 2);
+        }
+
+        {
+            let mut bitset = BitSet::from(Word::default());
+            assert!(bitset.is_clear());
+
+            bitset.insert(1..);
+            assert!(!bitset.get(0));
+            for i in 1..BitSet::WORD_SIZE {
+                assert!(bitset.get(i), "Bit {i} is not set");
+            }
+        }
+    }
+
+    #[test]
+    fn flip() {
+        {
+            let mut bitset = BitSet::new();
+            bitset.flip(5);
+            assert!(bitset.get(5));
+
+            bitset.flip(5);
+            assert!(!bitset.get(5));
+        }
+
+        {
+            let mut bitset = BitSet::new();
+            bitset.flip(2..7);
+            assert!(bitset.get(4));
+            assert!(bitset.get(5));
+
+            bitset.flip(..5);
+            assert!(!bitset.get(4));
+            assert!(bitset.get(5));
+        }
+
+        {
+            let mut bitset = BitSet::new();
+            bitset.flip(..=5);
+            assert!(bitset.get(4));
+            assert!(bitset.get(5));
+            assert!(!bitset.get(6));
+        }
+
+        {
+            let val: Word = 0b0101_0101;
+            let mut bitset = BitSet::from(val);
+
+            for i in (0..8).step_by(2) {
+                bitset.flip(i);
+            }
+            assert!(bitset.is_clear(), "{bitset:?}");
+
+            bitset.flip(..);
+            assert!(bitset.is_full(), "{bitset:?}");
+        }
+    }
+
+    #[test]
+    fn put() {
+        {
+            let mut bitset = BitSet::new();
+            assert!(!bitset.put(5, true));
+            assert!(bitset.get(5));
+
+            assert!(bitset.put(5, true));
+            assert!(bitset.get(5));
+
+            assert!(bitset.put(5, false));
+            assert!(!bitset.get(5));
+        }
     }
 
     #[test]
