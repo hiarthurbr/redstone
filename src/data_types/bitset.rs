@@ -462,23 +462,52 @@ impl BitSet {
             self.set(index, !self.get(index));
         }
         if let Some((start, end, inclusive)) = index.range() {
-            let bitset_len = self.len();
-            let len = bitset_len * Self::WORD_SIZE;
+            let len = self.capacity();
             let start = start.unwrap_or(0);
             let end = match end {
-                Some(end) if inclusive => end,
+                Some(end) if inclusive => end + 1,
                 Some(end) => end,
-                None if inclusive => len - 1,
+                None if inclusive => len,
                 None => len,
             };
+            let width = end - start;
 
             if inclusive {
-                for i in start..=end {
-                    self.set(i, !self.get(i));
-                }
+                self.grow_to_size(end.saturating_sub(1));
             } else {
-                for i in start..end {
-                    self.set(i, !self.get(i));
+                self.grow_to_size(end);
+            }
+
+            let starting_word_index = Self::word_index(start);
+            let ending_word_index = Self::word_index(end);
+            let shift_offset = start % Self::WORD_SIZE;
+            let total_offset = shift_offset + width;
+            let mut remaining_offset = width;
+
+            for (e, word_index) in (starting_word_index..=ending_word_index).enumerate() {
+                let shift_pattern = if e == 0 && remaining_offset < Self::WORD_SIZE {
+                    remaining_offset -= shift_offset;
+
+                    let res = Word::MAX << shift_offset;
+
+                    if total_offset >= Self::WORD_SIZE {
+                        res
+                    } else {
+                        res ^ (res & (Word::MAX << total_offset))
+                    }
+                } else if remaining_offset >= Self::WORD_SIZE {
+                    remaining_offset -= Self::WORD_SIZE;
+                    Word::MAX
+                } else {
+                    let res = Word::MAX >> (Self::WORD_SIZE - remaining_offset);
+                    remaining_offset = 0;
+                    res
+                };
+
+                self.data[word_index] ^= shift_pattern;
+
+                if remaining_offset == 0 {
+                    break;
                 }
             }
         }
@@ -1225,6 +1254,16 @@ mod test {
 
             bitset.flip(..);
             assert!(bitset.is_full(), "{bitset:?}");
+        }
+
+        {
+            let val: Word = 0b0101_0101;
+            let mut bitset = BitSet::from(val);
+
+            let not = !&bitset;
+
+            bitset.flip(..);
+            assert_eq!(bitset, not);
         }
     }
 
