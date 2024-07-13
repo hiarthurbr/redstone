@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use thiserror::Error;
 
-use crate::{DataResult, Errors};
+use crate::data_types::{DataResult, Errors, SerDe};
 
 use super::var_int::VarInt;
 
@@ -98,6 +98,12 @@ impl String {
 
         Ok(self)
     }
+}
+
+impl<'a> SerDe<'a> for String {
+    type Input = &'a [u8];
+    type Serialized = DataResult<Vec<u8>>;
+    type Deserialized = DataResult<Self>;
 
     /// Encodes a String into bytes.
     ///
@@ -105,7 +111,7 @@ impl String {
     ///
     /// Returns [`StringError::OutOfBoundsLength`] if the length of the string overflows an i32,
     /// or [`VarIntError::EncodeOverflow`] if there is a problem encoding the [`VarInt`].
-    pub fn to_bytes(&mut self) -> DataResult<Vec<u8>> {
+    fn encode(&self) -> Self::Serialized {
         let len = self
             .data
             .len()
@@ -124,13 +130,13 @@ impl String {
     /// Returns [`StringError::InvalidUTF8`] if the bytes are not valid UTF-8,
     /// [`StringError::InvalidLength`] if the length of the string is not equal to the length specified by the [`VarInt`]
     /// or [`VarIntError::EncodeOverflow`] if there is a problem encoding the [`VarInt`].
-    pub fn from_bytes(bytes: &[u8]) -> DataResult<Self> {
+    fn decode(data: Self::Input) -> Self::Deserialized {
         let mut position = 0;
-        let size = VarInt::decode(&bytes[position..])?;
+        let size = VarInt::decode(&data[position..])?;
 
         position += size.encode()?.len();
 
-        let data = std::string::String::from_utf8(bytes[position..].to_vec())
+        let data = std::string::String::from_utf8(data[position..].to_vec())
             .map_err(|_| StringError::InvalidUTF8)?;
 
         #[allow(clippy::cast_sign_loss)]
@@ -169,7 +175,7 @@ impl From<String> for std::string::String {
 
 #[cfg(test)]
 mod test {
-    use crate::Errors;
+    use crate::data_types::{Errors, SerDe};
     use std::str::FromStr;
 
     use super::{String, StringError};
@@ -177,11 +183,11 @@ mod test {
     #[test]
     fn encode_decode_string_001() {
         let original_string = "Hello, 你好, नमस्ते!";
-        let mut utf8_string = String::from_str(original_string).unwrap();
+        let utf8_string = String::from_str(original_string).unwrap();
 
-        let bytes = utf8_string.to_bytes();
+        let bytes = utf8_string.encode();
 
-        if let Ok(decoded_string) = String::from_bytes(&bytes.unwrap()) {
+        if let Ok(decoded_string) = String::decode(&bytes.unwrap()) {
             assert_eq!(decoded_string.data, original_string);
         } else {
             panic!("Failed to decode the string");
@@ -191,11 +197,11 @@ mod test {
     #[test]
     fn encode_decode_string_002() {
         let original_string = "Hello, こんにちは, नमस्ते";
-        let mut utf8_string = String::from_str(original_string).unwrap();
+        let utf8_string = String::from_str(original_string).unwrap();
 
-        let bytes = utf8_string.to_bytes();
+        let bytes = utf8_string.encode();
 
-        if let Ok(decoded_string) = String::from_bytes(&bytes.unwrap()) {
+        if let Ok(decoded_string) = String::decode(&bytes.unwrap()) {
             assert_eq!(decoded_string.data, original_string);
         } else {
             panic!("Failed to decode the string");
@@ -205,11 +211,11 @@ mod test {
     #[test]
     fn encode_decode_string_003() {
         let original_string = "Hello, สวัสดี, 你好";
-        let mut utf8_string = String::from_str(original_string).unwrap();
+        let utf8_string = String::from_str(original_string).unwrap();
 
-        let bytes = utf8_string.to_bytes();
+        let bytes = utf8_string.encode();
 
-        if let Ok(decoded_string) = String::from_bytes(&bytes.unwrap()) {
+        if let Ok(decoded_string) = String::decode(&bytes.unwrap()) {
             assert_eq!(decoded_string.data, original_string);
         } else {
             panic!("Failed to decode the string");
@@ -219,11 +225,11 @@ mod test {
     #[test]
     fn encode_decode_string_004() {
         let original_string = "This is a valid string 🚀";
-        let mut utf8_string = String::from_str(original_string).unwrap();
+        let utf8_string = String::from_str(original_string).unwrap();
 
-        let bytes = utf8_string.to_bytes();
+        let bytes = utf8_string.encode();
 
-        if let Ok(decoded_string) = String::from_bytes(&bytes.unwrap()) {
+        if let Ok(decoded_string) = String::decode(&bytes.unwrap()) {
             assert_eq!(decoded_string.data, original_string);
         } else {
             panic!("Failed to decode the string");
@@ -234,7 +240,7 @@ mod test {
     fn invalid_utf8_bytes_001() {
         // Providing invalid UTF-8 bytes to check error handling
         let invalid_bytes = [vec![0x0B], b"Hello, \xF0\x28\x8C\xBC".into()].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidUTF8)));
     }
 
@@ -242,7 +248,7 @@ mod test {
     fn invalid_utf8_bytes_002() {
         // Providing invalid UTF-8 bytes to check error handling
         let invalid_bytes = [vec![0x02], vec![0xC0, 0xAF]].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidUTF8)));
     }
 
@@ -250,7 +256,7 @@ mod test {
     fn invalid_utf8_bytes_003() {
         // Providing invalid UTF-8 bytes to check error handling
         let invalid_bytes = [vec![0x04], vec![0xF5, 0x80, 0x82, 0x83]].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidUTF8)));
     }
 
@@ -258,7 +264,7 @@ mod test {
     fn invalid_length_001() {
         // The real string length is 12, but here we say it's 228
         let invalid_bytes: Vec<u8> = [vec![0xE4], b"Running fast".into()].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -270,7 +276,7 @@ mod test {
             b"Traversing the mountain ranges to seek hidden treasures".into(),
         ]
         .concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -282,7 +288,7 @@ mod test {
             b"The symphony of nature orchestrates a mesmerizing dance".into(),
         ]
         .concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -290,7 +296,7 @@ mod test {
     fn invalid_length_004() {
         // The real string length is 10, but here we say it's 63
         let invalid_bytes = [vec![0x3F], b"Pizza time".into()].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -302,7 +308,7 @@ mod test {
             b"Lost in the maze of thoughts, seeking clarity and truth".into(),
         ]
         .concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -310,7 +316,7 @@ mod test {
     fn invalid_length_006() {
         // The real string length is 11, but here we say it's 200
         let invalid_bytes = [vec![0xC8], b"Hello world".into()].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -318,7 +324,7 @@ mod test {
     fn invalid_length_007() {
         // The real string length is 8, but here we say it's 90
         let invalid_bytes = [vec![0x5A], b"Blue sky".into()].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
@@ -326,25 +332,25 @@ mod test {
     fn invalid_length_008() {
         // The real string length is 13, but here we say it's 175
         let invalid_bytes = [vec![0xAF], b"Coding is fun".into()].concat();
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
     #[test]
     fn invalid_length_009() {
         let invalid_bytes = vec![0xFF, 0xFE, 0xFD, 0xFC];
-        let result = String::from_bytes(&invalid_bytes);
+        let result = String::decode(&invalid_bytes);
         assert_eq!(result, Err(Errors::StringError(StringError::InvalidLength)));
     }
 
     #[test]
     fn empty_string() {
         let empty_string = "";
-        let mut utf8_string = String::from_str(empty_string).unwrap();
+        let utf8_string = String::from_str(empty_string).unwrap();
 
-        let bytes = utf8_string.to_bytes();
+        let bytes = utf8_string.encode();
 
-        if let Ok(decoded_string) = String::from_bytes(&bytes.unwrap()) {
+        if let Ok(decoded_string) = String::decode(&bytes.unwrap()) {
             assert_eq!(decoded_string.data, empty_string);
         } else {
             panic!("Failed to decode the empty string");
@@ -354,13 +360,13 @@ mod test {
     #[test]
     fn round_trip() {
         let original_string = "Testing round-trip encoding and decoding!";
-        let mut utf8_string = String::from_str(original_string).unwrap();
+        let utf8_string = String::from_str(original_string).unwrap();
 
-        let bytes = utf8_string.to_bytes().unwrap();
+        let bytes = utf8_string.encode().unwrap();
 
-        if let Ok(mut decoded_string) = String::from_bytes(&bytes) {
+        if let Ok(decoded_string) = String::decode(&bytes) {
             assert_eq!(decoded_string.data, original_string);
-            let re_encoded_bytes = decoded_string.to_bytes().unwrap();
+            let re_encoded_bytes = decoded_string.encode().unwrap();
             assert_eq!(re_encoded_bytes, bytes);
         } else {
             panic!("Failed to decode the string");

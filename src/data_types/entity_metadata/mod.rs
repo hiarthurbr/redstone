@@ -1,5 +1,5 @@
 pub struct EntityMetadata;
-use crate::{Chat, Position, Slot, String, VarInt, VarLong};
+use crate::data_types::{Chat, Position, Slot, String, VarInt, VarLong};
 
 #[allow(clippy::module_name_repetitions)]
 pub enum EntityMetadataType {

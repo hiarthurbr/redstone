@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::DataResult;
+use crate::data_types::{DataResult, Errors, SerDe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
 pub enum PositionError {
@@ -43,10 +43,16 @@ impl Position {
 
         Ok(Position { x, y, z })
     }
+}
+
+impl SerDe<'_> for Position {
+    type Input = i64;
+    type Serialized = i64;
+    type Deserialized = DataResult<Self>;
 
     /// Encodes a [`Position`] into a 64-bit integer
     #[must_use]
-    pub fn encode(&self) -> i64 {
+    fn encode(&self) -> Self::Serialized {
         let x = (i64::from(self.x) & 0x03FF_FFFF) << 38;
         let y = i64::from(self.y) & 0xFFF;
         let z = (i64::from(self.z) & 0x03FF_FFFF) << 12;
@@ -65,21 +71,23 @@ impl Position {
     /// Returns [`PositionError::Overflow`] if any of the coordinates overflow an `i32`.
     ///
     /// Returns an error if any of the coordinates are out of range. See [`Position::new`].
-    pub fn decode(value: i64) -> DataResult<Position> {
+    fn decode(value: Self::Input) -> Self::Deserialized {
         let x = value >> 38;
         let y = value << 52 >> 52;
         let z = value << 26 >> 38;
 
         Self::new(
-            x.try_into().map_err(|_| PositionError::Overflow)?,
-            y.try_into().map_err(|_| PositionError::Overflow)?,
-            z.try_into().map_err(|_| PositionError::Overflow)?,
+            x.try_into().map_err(Errors::map(PositionError::Overflow))?,
+            y.try_into().map_err(Errors::map(PositionError::Overflow))?,
+            z.try_into().map_err(Errors::map(PositionError::Overflow))?,
         )
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::data_types::SerDe;
+
     use super::Position;
 
     #[allow(clippy::unusual_byte_groupings)]

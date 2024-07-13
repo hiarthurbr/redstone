@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{data_types::var_int::VarInt, Boolean, DataResult};
+use crate::data_types::{Boolean, DataResult, SerDe, VarInt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
 pub enum SlotDataError {}
@@ -31,7 +31,7 @@ impl Slot {
                 // bytes.extend_from_slice(&data.nbt.into());
                 Ok(bytes)
             }
-            None => Ok(vec![Boolean(false).encode()]),
+            None => Ok(vec![Boolean::from(false).encode()]),
         }
     }
 }

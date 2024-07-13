@@ -6,11 +6,14 @@ pub mod entity_metadata;
 pub mod identifier;
 pub mod json_chat;
 pub mod position;
+pub mod rotation;
 pub mod slot;
 pub mod string;
 pub mod var_int;
 pub mod var_long;
 pub mod x;
+
+use std::fmt::Debug;
 
 pub use angle::*;
 pub use bitset::*;
@@ -88,6 +91,31 @@ pub enum Errors {
     BooleanError(#[from] BooleanError),
     #[error("PositionError: {0}")]
     PositionError(#[from] PositionError),
+}
+
+impl Errors {
+    /// Converts a specific error into a generic error.
+    #[allow(clippy::missing_errors_doc)]
+    pub fn err<T>(error: impl Into<Errors>) -> DataResult<T> {
+        Err(error.into())
+    }
+
+    /// Maps to a generic error.
+    #[allow(clippy::missing_errors_doc)]
+    pub fn map<E>(error: impl Into<Errors>) -> impl FnOnce(E) -> Errors {
+        |_| error.into()
+    }
+}
+
+pub trait SerDe<'a> {
+    type Input;
+    type Serialized;
+    type Deserialized;
+
+    #[allow(clippy::missing_errors_doc)]
+    fn encode(&self) -> Self::Serialized;
+    #[allow(clippy::missing_errors_doc)]
+    fn decode(data: Self::Input) -> Self::Deserialized;
 }
 
 pub type DataResult<T> = std::result::Result<T, Errors>;

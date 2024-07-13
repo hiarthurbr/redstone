@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::DataResult;
+use crate::data_types::{DataResult, SerDe};
 
 static SEGMENT_BITS: i64 = 0x7F;
 static CONTINUE_BIT: i64 = 0x80;
@@ -22,12 +22,23 @@ impl VarLong {
         VarLong(value)
     }
 
+    #[must_use]
+    pub fn value(&self) -> i64 {
+        self.0
+    }
+}
+
+impl<'a> SerDe<'a> for VarLong {
+    type Input = &'a [u8];
+    type Serialized = DataResult<Vec<u8>>;
+    type Deserialized = DataResult<Self>;
+
     /// Decodes a [`VarLong`] from a given buffer.
     ///
     /// ## Errors
     ///
     /// Returns an error if the [`VarLong`] is too big.
-    pub fn decode(buf: &[u8]) -> DataResult<Self> {
+    fn decode(buf: Self::Input) -> Self::Deserialized {
         let mut int = 0;
         let mut position: i32 = 0;
 
@@ -53,40 +64,35 @@ impl VarLong {
     /// ## Errors
     ///
     /// Returns an error on overflow.
-    pub fn write(&mut self) -> DataResult<Vec<u8>> {
+    fn encode(&self) -> Self::Serialized {
         let mut bytes: Vec<u8> = Vec::new();
 
+        let mut int = self.0;
+
         loop {
-            if (self.0 & !SEGMENT_BITS) == 0 {
-                bytes.push(
-                    self.0
-                        .try_into()
-                        .map_err(|_| VarLongError::EncodeOverflow)?,
-                );
+            if (int & !SEGMENT_BITS) == 0 {
+                bytes.push(int.try_into().map_err(|_| VarLongError::EncodeOverflow)?);
 
                 return Ok(bytes);
             }
 
             bytes.push(
-                ((self.0 & SEGMENT_BITS) | CONTINUE_BIT)
+                ((int & SEGMENT_BITS) | CONTINUE_BIT)
                     .try_into()
                     .map_err(|_| VarLongError::EncodeOverflow)?,
             );
 
             // Perform logical right shift by 7 bits (equivalent to >>>= 7 in other languages)
-            self.0 >>= 7; // Perform arithmetic right shift
-            self.0 &= !(!0 << (64 - 7)); // Masking to ensure zero-fill behavior
+            int >>= 7; // Perform arithmetic right shift
+            int &= !(!0 << (64 - 7)); // Masking to ensure zero-fill behavior
         }
-    }
-
-    #[must_use]
-    pub fn value(&self) -> i64 {
-        self.0
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::data_types::SerDe;
+
     use super::VarLong;
 
     #[test]
@@ -96,7 +102,7 @@ mod test {
 
     #[test]
     fn write_0() {
-        assert_eq!(VarLong(0).write().unwrap(), vec![0x00]);
+        assert_eq!(VarLong(0).encode().unwrap(), vec![0x00]);
     }
 
     #[test]
@@ -106,7 +112,7 @@ mod test {
 
     #[test]
     fn write_1() {
-        assert_eq!(VarLong(1).write().unwrap(), vec![0x01]);
+        assert_eq!(VarLong(1).encode().unwrap(), vec![0x01]);
     }
 
     #[test]
@@ -116,7 +122,7 @@ mod test {
 
     #[test]
     fn write_2() {
-        assert_eq!(VarLong(2).write().unwrap(), vec![0x02]);
+        assert_eq!(VarLong(2).encode().unwrap(), vec![0x02]);
     }
 
     #[test]
@@ -126,7 +132,7 @@ mod test {
 
     #[test]
     fn write_127() {
-        assert_eq!(VarLong(127).write().unwrap(), vec![0x7f]);
+        assert_eq!(VarLong(127).encode().unwrap(), vec![0x7f]);
     }
 
     #[test]
@@ -136,7 +142,7 @@ mod test {
 
     #[test]
     fn write_128() {
-        assert_eq!(VarLong(128).write().unwrap(), vec![0x80, 0x01]);
+        assert_eq!(VarLong(128).encode().unwrap(), vec![0x80, 0x01]);
     }
 
     #[test]
@@ -146,7 +152,7 @@ mod test {
 
     #[test]
     fn write_255() {
-        assert_eq!(VarLong(255).write().unwrap(), vec![0xff, 0x01]);
+        assert_eq!(VarLong(255).encode().unwrap(), vec![0xff, 0x01]);
     }
 
     #[test]
@@ -162,7 +168,7 @@ mod test {
     #[test]
     fn write_2147483647() {
         assert_eq!(
-            VarLong(2_147_483_647).write().unwrap(),
+            VarLong(2_147_483_647).encode().unwrap(),
             vec![0xff, 0xff, 0xff, 0xff, 0x07]
         );
     }
@@ -180,7 +186,7 @@ mod test {
     #[test]
     fn write_9223372036854775807() {
         assert_eq!(
-            VarLong(9_223_372_036_854_775_807).write().unwrap(),
+            VarLong(9_223_372_036_854_775_807).encode().unwrap(),
             vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]
         );
     }
@@ -198,7 +204,7 @@ mod test {
     #[test]
     fn write_minus_1() {
         assert_eq!(
-            VarLong(-1).write().unwrap(),
+            VarLong(-1).encode().unwrap(),
             vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
         );
     }
@@ -216,7 +222,7 @@ mod test {
     #[test]
     fn write_minus_2147483648() {
         assert_eq!(
-            VarLong(-2_147_483_648).write().unwrap(),
+            VarLong(-2_147_483_648).encode().unwrap(),
             vec![0x80, 0x80, 0x80, 0x80, 0xf8, 0xff, 0xff, 0xff, 0xff, 0x01]
         );
     }
@@ -234,7 +240,7 @@ mod test {
     #[test]
     fn write_minus_9223372036854775808() {
         assert_eq!(
-            VarLong(-9_223_372_036_854_775_808).write().unwrap(),
+            VarLong(-9_223_372_036_854_775_808).encode().unwrap(),
             vec![0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x01]
         );
     }

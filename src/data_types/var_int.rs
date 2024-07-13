@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::DataResult;
+use crate::data_types::{DataResult, SerDe};
 
 static SEGMENT_BITS: i32 = 0x7F;
 static CONTINUE_BIT: i32 = 0x80;
@@ -22,12 +22,23 @@ impl VarInt {
         VarInt(value)
     }
 
+    #[must_use]
+    pub fn value(&self) -> i32 {
+        self.0
+    }
+}
+
+impl<'a> SerDe<'a> for VarInt {
+    type Input = &'a [u8];
+    type Serialized = DataResult<Vec<u8>>;
+    type Deserialized = DataResult<Self>;
+
     /// Decodes a [`VarInt`] from a given buffer.
     ///
     /// ## Errors
     ///
     /// Returns [`VarIntError::DecodeOverflow`] if the [`VarInt`] is too big.
-    pub fn decode(buf: &[u8]) -> DataResult<Self> {
+    fn decode(buf: Self::Input) -> Self::Deserialized {
         let mut value = 0;
         let mut position = 0;
 
@@ -53,7 +64,7 @@ impl VarInt {
     /// ## Errors
     ///
     /// Returns [`VarIntError::EncodeOverflow`] on overflow.
-    pub fn encode(&self) -> DataResult<Vec<u8>> {
+    fn encode(&self) -> Self::Serialized {
         let mut bytes: Vec<u8> = Vec::new();
 
         let mut int = self.0;
@@ -76,15 +87,24 @@ impl VarInt {
             int &= !(!0 << (32 - 7)); // Masking to ensure zero-fill behavior
         }
     }
+}
 
-    #[must_use]
-    pub fn value(&self) -> i32 {
-        self.0
+impl From<i32> for VarInt {
+    fn from(value: i32) -> Self {
+        VarInt(value)
+    }
+}
+
+impl From<VarInt> for i32 {
+    fn from(value: VarInt) -> i32 {
+        value.0
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::data_types::SerDe;
+
     use super::VarInt;
 
     #[test]

@@ -1,23 +1,29 @@
 use thiserror::Error;
 
-use crate::DataResult;
+use crate::data_types::{DataResult, Errors, SerDe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Error)]
 pub enum BooleanError {
-    #[error("Invalid boolean value")]
-    InvalidValue,
+    #[error("Invalid boolean value: {0}")]
+    InvalidValue(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Boolean(pub bool);
+pub struct Boolean(bool);
 
-impl Boolean {
-    #[must_use]
-    pub fn encode(&self) -> u8 {
+impl SerDe<'_> for Boolean {
+    type Input = u8;
+    type Serialized = u8;
+    type Deserialized = DataResult<Self>;
+
+    /// Encodes a [`Boolean`] into a [`u8`], where:
+    /// - `0x00` represents `false`.
+    /// - `0x01` represents `true`.
+    fn encode(&self) -> Self::Serialized {
         u8::from(self.0)
     }
 
-    /// Decodes a `u8` into a [`Boolean`], where:
+    /// Decodes a [`u8`] into a [`Boolean`], where:
     ///
     /// - `0x00` represents `false`.
     /// - `0x01` represents `true`.
@@ -25,11 +31,11 @@ impl Boolean {
     /// # Errors
     ///
     /// Returns [`BooleanError::InvalidValue`] if the value is not `0x00` or `0x01`.
-    pub fn decode(value: u8) -> DataResult<Boolean> {
-        match value {
+    fn decode(data: Self::Input) -> Self::Deserialized {
+        match data {
             0x00 => Ok(Boolean(false)),
             0x01 => Ok(Boolean(true)),
-            _ => Err(BooleanError::InvalidValue)?,
+            _ => Errors::err(BooleanError::InvalidValue("Invalid byte value")),
         }
     }
 }
